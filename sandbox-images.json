@@ -1,0 +1,8 @@
+{
+  "python": "python:3.12-slim",
+  "node": "node:22-slim",
+  "go": "golang:1.23-alpine",
+  "rust": "rust:1.77-slim",
+  "c": "gcc:14",
+  "default": "python:3.12-slim"
+}
