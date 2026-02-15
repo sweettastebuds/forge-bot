@@ -34,13 +34,15 @@ forge_bot/
   handlers/
     base.py           — Abstract base: forge_client, llm_client, config injected
     pull_request.py   — PR opened/synchronized: fetch diff, build review prompt, post comment
-    issue_comment.py  — Comment created: @mention or assigned, Q&A or /run dispatch
-    issue_assign.py   — Issue assigned to bot: greeting/triage
+    issue_comment.py  — Comment created: @mention reply with repo context
+                        Fetches repo tree, auto-fetches files referenced in thread,
+                        extracts attachment URLs from markdown, passes all to LLM
+    issue_assign.py   — Issue assigned to bot: greeting/triage (not yet implemented)
   clients/
     forge.py      — httpx.AsyncClient wrapper for Gitea/Forgejo API v1
-                    Methods: get_self, get_issue, get_pull_request, get_pull_diff,
-                    get_pull_files, get_issue_comments, post_comment, post_review,
-                    get_file_content, get_repo_tree
+                    Implemented: get_self, get_pull_diff, get_pull_files,
+                    get_issue_comments, post_comment, get_file_content, get_repo_tree
+                    Not yet: get_issue, get_pull_request, post_review
                     Auth: Authorization: token {FORGE_API_TOKEN}
                     PRs and issues share index namespace for comments
     llm.py        — AsyncOpenAI wrapper, asyncio.Semaphore for concurrency control
@@ -71,6 +73,10 @@ forge_bot/
 - Signature: HMAC-SHA256 hex digest over raw body bytes
 - Delivery ID: X-Gitea-Delivery / X-Forgejo-Delivery UUID for dedup
 - Bot identity: GET /api/v1/user on startup to learn own username
+- File content: GET /repos/{owner}/{repo}/raw/{filepath}?ref={ref}
+- Repo tree: GET /repos/{owner}/{repo}/git/trees/{ref}?recursive=true
+- Attachments: Gitea markdown images use /attachments/{uuid}/{filename} paths
+- Null coercion: Gitea sends null for empty lists (assignees, requested_reviewers) — use field_validator(mode="before")
 
 ## Critical Implementation Details
 
@@ -81,6 +87,8 @@ forge_bot/
 5. **Sandbox defaults**: --network=none, --memory=512m, --cpus=1.0, --pids-limit=256, 60s timeout.
 6. **Sandbox images**: Pre-pull on startup (SANDBOX_PREPULL_IMAGES env), on-demand pull for rest.
 7. **Prompt templates**: Jinja2 .j2 files in prompts/ dir. Low temperature (0.2). Severity prefixes (🔴🟡💡).
+8. **Repo context in issues**: IssueCommentHandler fetches repo tree + auto-fetches files mentioned in thread (max 5 files, 8k chars each). Attachment URLs extracted from markdown and surfaced to LLM.
+9. **Graceful degradation**: All context-fetching (tree, files, attachments) is wrapped in try/except — failures are logged but never block the reply.
 
 ## Commands
 

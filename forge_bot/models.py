@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class WebhookUser(BaseModel):
@@ -41,6 +41,11 @@ class PullRequest(BaseModel):
     assignees: list[WebhookUser] = Field(default_factory=list)
     requested_reviewers: list[WebhookUser] = Field(default_factory=list)
 
+    @field_validator("assignees", "requested_reviewers", mode="before")
+    @classmethod
+    def _null_to_list(cls, v: object) -> object:
+        return v if v is not None else []
+
 
 class Comment(BaseModel):
     """Comment object embedded in IssueCommentEvent."""
@@ -58,6 +63,11 @@ class Issue(BaseModel):
     body: str = ""
     pull_request: object | None = None
     assignees: list[WebhookUser] = Field(default_factory=list)
+
+    @field_validator("assignees", mode="before")
+    @classmethod
+    def _null_to_list(cls, v: object) -> object:
+        return v if v is not None else []
 
     @property
     def is_pull(self) -> bool:

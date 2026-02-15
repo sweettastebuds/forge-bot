@@ -81,6 +81,48 @@ def test_issue_is_pull_property():
     assert event2.issue.is_pull is False
 
 
+def test_null_assignees_coerced_to_empty_list():
+    """Gitea sends assignees: null — should be coerced to []."""
+    payload = {
+        "action": "opened",
+        "issue": {
+            "number": 1,
+            "title": "Test",
+            "body": "",
+            "pull_request": None,
+            "assignees": None,
+        },
+        "repository": {"full_name": "owner/repo"},
+        "sender": {"id": 1, "login": "dev"},
+    }
+    event = IssuesEvent.model_validate(payload)
+    assert event.issue.assignees == []
+
+
+def test_null_pr_assignees_coerced():
+    """PR assignees and requested_reviewers null → []."""
+    payload = {
+        "action": "opened",
+        "number": 1,
+        "pull_request": {
+            "id": 1,
+            "number": 1,
+            "title": "Test",
+            "state": "open",
+            "user": {"id": 1, "login": "dev"},
+            "head": {"ref": "feat", "sha": "aaa"},
+            "base": {"ref": "main", "sha": "bbb"},
+            "assignees": None,
+            "requested_reviewers": None,
+        },
+        "repository": {"full_name": "owner/repo"},
+        "sender": {"id": 1, "login": "dev"},
+    }
+    event = PullRequestEvent.model_validate(payload)
+    assert event.pull_request.assignees == []
+    assert event.pull_request.requested_reviewers == []
+
+
 def test_webhook_user_minimal():
     user = WebhookUser(id=42, login="test-user")
     assert user.id == 42

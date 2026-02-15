@@ -78,6 +78,58 @@ class ForgeClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_file_content(
+        self, owner: str, repo: str, filepath: str, ref: str = ""
+    ) -> str:
+        """GET /repos/{owner}/{repo}/raw/{filepath}?ref={ref} — file content."""
+        params = {}
+        if ref:
+            params["ref"] = ref
+        resp = await self._client.get(
+            f"/repos/{owner}/{repo}/raw/{filepath}",
+            params=params,
+            headers={"Accept": "text/plain"},
+        )
+        resp.raise_for_status()
+        return resp.text
+
+    async def get_repo_tree(
+        self,
+        owner: str,
+        repo: str,
+        ref: str = "main",
+        *,
+        recursive: bool = True,
+    ) -> list[dict[str, Any]]:
+        """GET /repos/{owner}/{repo}/git/trees/{ref} — repo file tree."""
+        params = {"recursive": "true"} if recursive else {}
+        resp = await self._client.get(
+            f"/repos/{owner}/{repo}/git/trees/{ref}",
+            params=params,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("tree", [])
+
+    async def get_commit(
+        self, owner: str, repo: str, sha: str
+    ) -> dict[str, Any]:
+        """GET /repos/{owner}/{repo}/git/commits/{sha} — single commit info."""
+        resp = await self._client.get(
+            f"/repos/{owner}/{repo}/git/commits/{sha}"
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def download_url(self, url: str) -> str:
+        """GET an arbitrary fully-qualified URL using the bot's auth token.
+
+        Useful for downloading attachments from the Forge instance.
+        """
+        resp = await self._client.get(url)
+        resp.raise_for_status()
+        return resp.text
+
     async def close(self) -> None:
         """Close the underlying HTTP client."""
         await self._client.aclose()

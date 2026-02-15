@@ -167,3 +167,93 @@ async def test_post_comment_raises_on_error(settings: Settings, httpx_mock: HTTP
             await client.post_comment("owner", "repo", 5, "nope")
     finally:
         await client.close()
+
+
+async def test_get_file_content(settings: Settings, httpx_mock: HTTPXMock):
+    httpx_mock.add_response(
+        url="https://gitea.example.com/api/v1/repos/owner/repo/raw/src/main.py",
+        text="print('hello')\n",
+    )
+
+    client = ForgeClient(settings)
+    try:
+        content = await client.get_file_content("owner", "repo", "src/main.py")
+        assert content == "print('hello')\n"
+    finally:
+        await client.close()
+
+
+async def test_get_file_content_with_ref(settings: Settings, httpx_mock: HTTPXMock):
+    httpx_mock.add_response(
+        url="https://gitea.example.com/api/v1/repos/owner/repo/raw/README.md?ref=develop",
+        text="# Hello\n",
+    )
+
+    client = ForgeClient(settings)
+    try:
+        content = await client.get_file_content(
+            "owner", "repo", "README.md", ref="develop"
+        )
+        assert content == "# Hello\n"
+    finally:
+        await client.close()
+
+
+async def test_get_file_content_raises_on_404(settings: Settings, httpx_mock: HTTPXMock):
+    httpx_mock.add_response(
+        url="https://gitea.example.com/api/v1/repos/owner/repo/raw/missing.txt",
+        status_code=404,
+    )
+
+    client = ForgeClient(settings)
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.get_file_content("owner", "repo", "missing.txt")
+    finally:
+        await client.close()
+
+
+async def test_get_repo_tree(settings: Settings, httpx_mock: HTTPXMock):
+    httpx_mock.add_response(
+        url="https://gitea.example.com/api/v1/repos/owner/repo/git/trees/main?recursive=true",
+        json={
+            "sha": "abc123",
+            "tree": [
+                {"path": "src/main.py", "type": "blob", "size": 100},
+                {"path": "src/utils.py", "type": "blob", "size": 200},
+                {"path": "README.md", "type": "blob", "size": 50},
+            ],
+        },
+    )
+
+    client = ForgeClient(settings)
+    try:
+        tree = await client.get_repo_tree("owner", "repo", "main")
+        assert len(tree) == 3
+        assert tree[0]["path"] == "src/main.py"
+        assert tree[2]["type"] == "blob"
+    finally:
+        await client.close()
+
+
+async def test_get_repo_tree_non_recursive(settings: Settings, httpx_mock: HTTPXMock):
+    httpx_mock.add_response(
+        url="https://gitea.example.com/api/v1/repos/owner/repo/git/trees/main",
+        json={
+            "sha": "abc123",
+            "tree": [
+                {"path": "src", "type": "tree"},
+                {"path": "README.md", "type": "blob", "size": 50},
+            ],
+        },
+    )
+
+    client = ForgeClient(settings)
+    try:
+        tree = await client.get_repo_tree(
+            "owner", "repo", "main", recursive=False
+        )
+        assert len(tree) == 2
+        assert tree[0]["type"] == "tree"
+    finally:
+        await client.close()
