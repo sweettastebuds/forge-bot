@@ -1,0 +1,78 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/python
+{
+	"name": "forge-bot",
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+	"features": {
+		"ghcr.io/devcontainers/features/docker-in-docker:2": {
+			"moby": true,
+			"azureDnsAutoDetection": true,
+			"installDockerBuildx": true,
+			"installDockerComposeSwitch": true,
+			"version": "latest",
+			"dockerDashComposeVersion": "v2"
+		},
+		"ghcr.io/stu-bell/devcontainer-features/claude-code:0": {}
+	},
+	"postCreateCommand": "pip install -e . -r requirements-dev.txt",
+	"customizations": {
+		"vscode": {
+			"settings": {
+				"python.defaultInterpreterPath": "/usr/local/bin/python",
+				"python.testing.pytestEnabled": true,
+				"python.testing.pytestArgs": [
+					"tests"
+				],
+				"[python]": {
+					"editor.defaultFormatter": "charliermarsh.ruff",
+					"editor.formatOnSave": true
+				}
+			},
+			"extensions": [
+				"ms-python.python",
+				"charliermarsh.ruff",
+				"ms-python.debugpy",
+				"github.copilot",
+				"github.copilot-chat",
+				"anthropic.claude-code"
+			]
+		}
+	},
+	"forwardPorts": [
+		8080
+	],
+	"remoteEnv": {
+		"FORGE_INSTANCE_URL": "${localEnv:FORGE_INSTANCE_URL:https://gitea.example.com}",
+		"FORGE_API_TOKEN": "${localEnv:FORGE_API_TOKEN:}",
+		"FORGE_WEBHOOK_SECRET": "${localEnv:FORGE_WEBHOOK_SECRET:dev-secret}",
+		"LLM_API_KEY": "${localEnv:LLM_API_KEY:}",
+		"LLM_BASE_URL": "${localEnv:LLM_BASE_URL:https://api.openai.com/v1}",
+		"LLM_MODEL": "${localEnv:LLM_MODEL:gpt-4o}",
+		"LOG_LEVEL": "DEBUG"
+	}
+	// "name": "Python 3",
+	// // Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	// "image": "mcr.microsoft.com/devcontainers/python:2-3.12-trixie",
+	// "features": {
+	// 	"ghcr.io/devcontainers/features/github-cli:1": {
+	// 		"installDirectlyFromGitHubRelease": true,
+	// 		"version": "latest"
+	// 	},
+	// 	"ghcr.io/stu-bell/devcontainer-features/claude-code:0": {},
+	// 	"ghcr.io/devcontainers-extra/features/ruff:2": {
+	// 		"version": "latest"
+	// 	}
+	// }
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	// "features": {},
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+	// Use 'postCreateCommand' to run commands after the container is created.
+	// "postCreateCommand": "pip3 install --user -r requirements.txt",
+	// Configure tool-specific properties.
+	// "customizations": {},
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "root"
+}
