@@ -9,7 +9,10 @@ from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 
+from forge_bot.clients.forge import ForgeClient
+from forge_bot.clients.llm import LLMClient
 from forge_bot.config import Settings
+from forge_bot.router import dispatch
 from forge_bot.utils.dedup import DeliveryTracker
 
 logger = logging.getLogger("forge_bot")
@@ -35,11 +38,30 @@ async def lifespan(app: FastAPI):
         app.state.settings.llm_model,
     )
 
-    # TODO Phase 2: Call GET /api/v1/user to resolve bot identity
+    # Resolve bot identity via Forge API
+    forge_client = ForgeClient(app.state.settings)
+    app.state.forge_client = forge_client
+    try:
+        bot_user = await forge_client.get_self()
+        app.state.bot_username = bot_user.login
+        logger.info("Bot identity resolved: %s (id=%d)", bot_user.login, bot_user.id)
+    except Exception:
+        logger.warning(
+            "Could not resolve bot identity — self-loop guard disabled. "
+            "Check FORGE_INSTANCE_URL and FORGE_API_TOKEN."
+        )
+        app.state.bot_username = ""
+
+    # Initialize LLM client
+    llm_client = LLMClient(app.state.settings)
+    app.state.llm_client = llm_client
+
     # TODO Phase 5: Initialize sandbox orchestrator, pre-pull images
 
     yield
 
+    await llm_client.close()
+    await forge_client.close()
     logger.info("forge-bot shutting down")
 
 
@@ -72,7 +94,14 @@ def verify_hmac(body: bytes, signature: str | None, secret: str) -> None:
         raise HTTPException(status_code=403, detail="Invalid signature")
 
 
-async def process_webhook(event_type: str, payload: dict[str, Any]) -> None:
+async def process_webhook(
+    event_type: str,
+    payload: dict[str, Any],
+    bot_username: str,
+    forge_client: ForgeClient,
+    llm_client: LLMClient,
+    settings: Settings,
+) -> None:
     """Background task: route the webhook event to the appropriate handler.
 
     This runs after the HTTP 200 has already been returned to Gitea.
@@ -81,8 +110,22 @@ async def process_webhook(event_type: str, payload: dict[str, Any]) -> None:
     repo = payload.get("repository", {}).get("full_name", "unknown")
     logger.info("Processing event=%s action=%s repo=%s", event_type, action, repo)
 
-    # TODO Phase 2: Dispatch to router.py
-    # router.dispatch(event_type, payload, settings, bot_username)
+    try:
+        await dispatch(
+            event_type,
+            payload,
+            bot_username,
+            forge_client=forge_client,
+            llm_client=llm_client,
+            settings=settings,
+        )
+    except Exception:
+        logger.exception(
+            "Error processing event=%s action=%s repo=%s",
+            event_type,
+            action,
+            repo,
+        )
 
 
 @app.post("/webhook")
@@ -142,7 +185,16 @@ async def webhook(request: Request, background_tasks: BackgroundTasks) -> Respon
         delivery_id or "unknown",
     )
 
-    background_tasks.add_task(process_webhook, event_type, payload)
+    bot_username: str = request.app.state.bot_username
+    background_tasks.add_task(
+        process_webhook,
+        event_type,
+        payload,
+        bot_username,
+        request.app.state.forge_client,
+        request.app.state.llm_client,
+        settings,
+    )
 
     return Response(status_code=200, content="OK")
 

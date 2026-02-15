@@ -3,10 +3,12 @@
 import hashlib
 import hmac
 import json
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from forge_bot.models import WebhookUser
 from forge_bot.server import app
 
 TEST_SECRET = "test-secret"
@@ -41,10 +43,14 @@ def _set_env(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 async def client():
-    async with app.router.lifespan_context(app):
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
-            yield c
+    mock_get_self = AsyncMock(return_value=WebhookUser(id=1, login="forge-bot"))
+    with patch("forge_bot.server.ForgeClient.get_self", mock_get_self), \
+         patch("forge_bot.server.ForgeClient.close", AsyncMock()), \
+         patch("forge_bot.server.LLMClient.close", AsyncMock()):
+        async with app.router.lifespan_context(app):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as c:
+                yield c
 
 
 async def test_health(client: AsyncClient):
