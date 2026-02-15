@@ -54,6 +54,6 @@ def sample_comment_payload() -> dict:
             "assignees": [],
         },
         "is_pull": False,
-        "repository": {"full_name": "owner/repo"},
+        "repository": {"full_name": "owner/repo", "default_branch": "master"},
         "sender": {"id": 1, "login": "developer"},
     }

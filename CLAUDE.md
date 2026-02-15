@@ -35,13 +35,18 @@ forge_bot/
     base.py           — Abstract base: forge_client, llm_client, config injected
     pull_request.py   — PR opened/synchronized: fetch diff, build review prompt, post comment
     issue_comment.py  — Comment created: @mention reply with repo context
-                        Fetches repo tree, auto-fetches files referenced in thread,
-                        extracts attachment URLs from markdown, passes all to LLM
+                        Fetches repo tree (using default_branch from webhook),
+                        auto-fetches grounding files (README, pyproject.toml, etc.),
+                        fetches files referenced in thread, detects commit SHAs,
+                        downloads text attachments, runs LLM with fetch-loop
+                        (LLM can request files via [FETCH: path] or [FETCH: path@branch],
+                        handler fetches and re-prompts, max 2 rounds)
     issue_assign.py   — Issue assigned to bot: greeting/triage (not yet implemented)
   clients/
     forge.py      — httpx.AsyncClient wrapper for Gitea/Forgejo API v1
                     Implemented: get_self, get_pull_diff, get_pull_files,
-                    get_issue_comments, post_comment, get_file_content, get_repo_tree
+                    get_issue_comments, post_comment, get_file_content,
+                    get_repo_tree, get_commit, download_url
                     Not yet: get_issue, get_pull_request, post_review
                     Auth: Authorization: token {FORGE_API_TOKEN}
                     PRs and issues share index namespace for comments
@@ -75,7 +80,8 @@ forge_bot/
 - Bot identity: GET /api/v1/user on startup to learn own username
 - File content: GET /repos/{owner}/{repo}/raw/{filepath}?ref={ref}
 - Repo tree: GET /repos/{owner}/{repo}/git/trees/{ref}?recursive=true
-- Attachments: Gitea markdown images use /attachments/{uuid}/{filename} paths
+- Commits: GET /repos/{owner}/{repo}/git/commits/{sha}
+- Attachments: Gitea markdown images use /attachments/{uuid}/{filename} paths — no API, parse from body
 - Null coercion: Gitea sends null for empty lists (assignees, requested_reviewers) — use field_validator(mode="before")
 
 ## Critical Implementation Details
@@ -87,8 +93,8 @@ forge_bot/
 5. **Sandbox defaults**: --network=none, --memory=512m, --cpus=1.0, --pids-limit=256, 60s timeout.
 6. **Sandbox images**: Pre-pull on startup (SANDBOX_PREPULL_IMAGES env), on-demand pull for rest.
 7. **Prompt templates**: Jinja2 .j2 files in prompts/ dir. Low temperature (0.2). Severity prefixes (🔴🟡💡).
-8. **Repo context in issues**: IssueCommentHandler fetches repo tree + auto-fetches files mentioned in thread (max 5 files, 8k chars each). Attachment URLs extracted from markdown and surfaced to LLM.
-9. **Graceful degradation**: All context-fetching (tree, files, attachments) is wrapped in try/except — failures are logged but never block the reply.
+8. **Repo context in issues**: IssueCommentHandler fetches repo tree (using default_branch from webhook payload), proactively fetches grounding files (README.md, pyproject.toml, etc.), auto-fetches files mentioned in thread (max 5, 8k chars each), detects commit SHAs and fetches commit info, downloads text-based attachments. LLM can request additional files via `[FETCH: path]` or `[FETCH: path@branch]` markers — handler fetches and re-prompts up to 2 rounds.
+9. **Graceful degradation**: All context-fetching (tree, files, commits, attachments) is wrapped in try/except — failures logged at WARNING level, never block the reply.
 
 ## Commands
 

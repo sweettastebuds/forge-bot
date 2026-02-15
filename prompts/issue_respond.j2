@@ -11,6 +11,12 @@ REPOSITORY FILE TREE (you have access to these files):
 ```
 {{ repo_tree }}
 ```
+
+If you need to read a file to answer accurately, respond ONLY with lines like:
+[FETCH: path/to/file.py]
+To fetch from a specific branch or commit:
+[FETCH: path/to/file.py@branch-name]
+I will fetch the contents and re-ask you. Do not guess file contents.
 {% endif %}
 {% if file_context %}
 FILE CONTENTS (referenced in the conversation):
@@ -21,10 +27,24 @@ FILE CONTENTS (referenced in the conversation):
 ```
 {% endfor %}
 {% endif %}
+{% if commit_context %}
+COMMIT INFORMATION (referenced in the conversation):
+{% for commit in commit_context %}
+--- {{ commit.sha[:12] }} ---
+{{ commit.summary }}
+{% endfor %}
+{% endif %}
 {% if attachments %}
-ATTACHMENTS (images/files shared in this conversation — you cannot view image contents, but acknowledge them):
+ATTACHMENTS (images/files shared in this conversation):
 {% for att in attachments %}
-- {{ att.alt }}: {{ att.url }}
+{% if att.content %}
+- {{ att.alt }} ({{ att.url }}):
+```
+{{ att.content }}
+```
+{% else %}
+- {{ att.alt }}: {{ att.url }} (binary/image — cannot display contents)
+{% endif %}
 {% endfor %}
 {% endif %}
 {% if rag_context %}

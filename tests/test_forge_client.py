@@ -257,3 +257,58 @@ async def test_get_repo_tree_non_recursive(settings: Settings, httpx_mock: HTTPX
         assert tree[0]["type"] == "tree"
     finally:
         await client.close()
+
+
+async def test_get_commit(settings: Settings, httpx_mock: HTTPXMock):
+    httpx_mock.add_response(
+        url="https://gitea.example.com/api/v1/repos/owner/repo/git/commits/abc123def",
+        json={
+            "sha": "abc123def456789",
+            "commit": {
+                "message": "fix: resolve auth bug",
+                "author": {
+                    "name": "Dev",
+                    "email": "dev@example.com",
+                    "date": "2026-01-01T00:00:00Z",
+                },
+            },
+        },
+    )
+
+    client = ForgeClient(settings)
+    try:
+        result = await client.get_commit("owner", "repo", "abc123def")
+        assert result["sha"] == "abc123def456789"
+        assert "resolve auth bug" in result["commit"]["message"]
+    finally:
+        await client.close()
+
+
+async def test_get_commit_raises_on_404(settings: Settings, httpx_mock: HTTPXMock):
+    httpx_mock.add_response(
+        url="https://gitea.example.com/api/v1/repos/owner/repo/git/commits/nonexistent",
+        status_code=404,
+    )
+
+    client = ForgeClient(settings)
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.get_commit("owner", "repo", "nonexistent")
+    finally:
+        await client.close()
+
+
+async def test_download_url(settings: Settings, httpx_mock: HTTPXMock):
+    httpx_mock.add_response(
+        url="https://gitea.example.com/attachments/uuid-123/notes.md",
+        text="# Meeting Notes\nDiscussed auth flow.",
+    )
+
+    client = ForgeClient(settings)
+    try:
+        content = await client.download_url(
+            "https://gitea.example.com/attachments/uuid-123/notes.md"
+        )
+        assert "Meeting Notes" in content
+    finally:
+        await client.close()
