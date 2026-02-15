@@ -7,6 +7,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from forge_bot.handlers.issue_comment import IssueCommentHandler
+from forge_bot.handlers.pull_request import PullRequestHandler
 from forge_bot.models import (
     IssueCommentEvent,
     IssuesEvent,
@@ -66,7 +67,9 @@ async def dispatch(
             event.number,
             event.repository.full_name,
         )
-        # TODO Phase 3: await pull_request_handler.handle(event)
+        if forge_client and llm_client and settings:
+            handler = PullRequestHandler(forge_client, llm_client, settings, bot_username)
+            await handler.handle(event)
         return
 
     # --- Issue comment events ---

@@ -101,6 +101,59 @@ async def test_post_comment(settings: Settings, httpx_mock: HTTPXMock):
         await client.close()
 
 
+async def test_get_pull_diff(settings: Settings, httpx_mock: HTTPXMock):
+    diff_text = (
+        "diff --git a/file.py b/file.py\n"
+        "--- a/file.py\n+++ b/file.py\n"
+        "@@ -1 +1 @@\n-old\n+new\n"
+    )
+    httpx_mock.add_response(
+        url="https://gitea.example.com/api/v1/repos/owner/repo/pulls/3.diff",
+        text=diff_text,
+    )
+
+    client = ForgeClient(settings)
+    try:
+        result = await client.get_pull_diff("owner", "repo", 3)
+        assert result == diff_text
+        assert "diff --git" in result
+    finally:
+        await client.close()
+
+
+async def test_get_pull_files(settings: Settings, httpx_mock: HTTPXMock):
+    httpx_mock.add_response(
+        url="https://gitea.example.com/api/v1/repos/owner/repo/pulls/3/files",
+        json=[
+            {"filename": "file.py", "additions": 5, "deletions": 2},
+            {"filename": "readme.md", "additions": 1, "deletions": 0},
+        ],
+    )
+
+    client = ForgeClient(settings)
+    try:
+        files = await client.get_pull_files("owner", "repo", 3)
+        assert len(files) == 2
+        assert files[0]["filename"] == "file.py"
+        assert files[1]["additions"] == 1
+    finally:
+        await client.close()
+
+
+async def test_get_pull_diff_raises_on_404(settings: Settings, httpx_mock: HTTPXMock):
+    httpx_mock.add_response(
+        url="https://gitea.example.com/api/v1/repos/owner/repo/pulls/999.diff",
+        status_code=404,
+    )
+
+    client = ForgeClient(settings)
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.get_pull_diff("owner", "repo", 999)
+    finally:
+        await client.close()
+
+
 async def test_post_comment_raises_on_error(settings: Settings, httpx_mock: HTTPXMock):
     httpx_mock.add_response(
         url="https://gitea.example.com/api/v1/repos/owner/repo/issues/5/comments",

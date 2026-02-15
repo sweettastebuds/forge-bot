@@ -46,6 +46,27 @@ class ForgeClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_pull_diff(
+        self, owner: str, repo: str, pull_index: int
+    ) -> str:
+        """GET /repos/{owner}/{repo}/pulls/{index}.diff — raw unified diff."""
+        resp = await self._client.get(
+            f"/repos/{owner}/{repo}/pulls/{pull_index}.diff",
+            headers={"Accept": "text/plain"},
+        )
+        resp.raise_for_status()
+        return resp.text
+
+    async def get_pull_files(
+        self, owner: str, repo: str, pull_index: int
+    ) -> list[dict[str, Any]]:
+        """GET /repos/{owner}/{repo}/pulls/{index}/files — changed file list."""
+        resp = await self._client.get(
+            f"/repos/{owner}/{repo}/pulls/{pull_index}/files"
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     async def post_comment(
         self, owner: str, repo: str, issue_index: int, body: str
     ) -> dict[str, Any]:
