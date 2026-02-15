@@ -43,6 +43,12 @@
 	"forwardPorts": [
 		8080
 	],
+	"portsAttributes": {
+		"8080": {
+			"label": "forge-bot webhook",
+			"onAutoForward": "silent"
+		}
+	},
 	"remoteEnv": {
 		"FORGE_INSTANCE_URL": "${localEnv:FORGE_INSTANCE_URL:https://gitea.example.com}",
 		"FORGE_API_TOKEN": "${localEnv:FORGE_API_TOKEN:}",
