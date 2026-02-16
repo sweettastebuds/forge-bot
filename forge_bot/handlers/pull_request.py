@@ -93,6 +93,7 @@ class PullRequestHandler(BaseHandler):
         user_message = self._build_user_message(event, file_summary, diff_text)
 
         # Call the LLM.
+        prompt_chars = len(system_prompt) + len(user_message)
         try:
             review = await self.llm.chat(system_prompt, user_message)
         except Exception:
@@ -101,6 +102,13 @@ class PullRequestHandler(BaseHandler):
                 "Sorry, I encountered an error while reviewing this PR. "
                 "Please try again later."
             )
+
+        logger.info(
+            "TRACE %s#%d | type=pr_review prompt=%dc reply=%dc "
+            "diff=%dc files=%d",
+            event.repository.full_name, pr_num,
+            prompt_chars, len(review), len(diff_text), len(changed_files),
+        )
 
         # Post the review as a regular comment (inline reviews are unreliable).
         try:

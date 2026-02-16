@@ -29,6 +29,9 @@ async def lifespan(app: FastAPI):
         level=getattr(logging, app.state.settings.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Silence verbose third-party loggers that flood output at DEBUG level.
+    for noisy in ("httpcore", "openai", "urllib3", "docker", "httpx"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     logger.info("forge-bot starting up")
     logger.info("Forge instance: %s", app.state.settings.forge_instance_url)

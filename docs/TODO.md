@@ -21,6 +21,26 @@
   post-render collapsing of consecutive blank lines (3+ → 2) in
   `_build_system_prompt`.
 
+### Action Items (new)
+
+- [x] **Silence verbose third-party DEBUG logging** — Pinned `httpcore`,
+  `openai`, `urllib3`, `docker`, and `httpx` loggers to WARNING in
+  `server.py` lifespan. Our TRACE/INFO output is now visible even at
+  DEBUG level.
+
+- [x] **Add trace logging to PR review handler** — Added TRACE line to
+  `PullRequestHandler.handle()` with prompt/reply/diff size and file count.
+
+- [x] **Add missing env vars to docker-compose.yml** — Already present
+  (added by user).
+
+- [ ] **PR inline review comments** — The PR handler currently posts a plain
+  comment via `post_comment()`. Gitea supports `POST /pulls/{index}/reviews`
+  with per-line comments and suggestions. The LLM output format (severity
+  prefixes + file:line references) already targets this. Parse the LLM review
+  output and map findings to inline review comments. Fall back to summary
+  comment on parse failure.
+
 ### Backlog
 
 - [ ] **Repo cloning / git operations in sandbox** — The bot cannot clone the
@@ -42,3 +62,11 @@
   this is heavyweight infrastructure; log-based debugging should be tried
   first and only if it proves insufficient should we invest in file-based
   traces.
+
+- [ ] **Write tools for LLM (post_comment, create_branch, commit_file)** —
+  Let the LLM take write actions on the Forge instance (post comments,
+  create branches, commit files) when approved by the user. *Backlog
+  because*: requires careful trust/safety boundary design — should the
+  LLM auto-commit, or require user approval? How to prevent infinite loops
+  (bot comments triggering its own webhooks)? Should be its own feature
+  branch with a clear permission model.
