@@ -38,9 +38,10 @@ forge_bot/
                         Dynamic context budgets via _context_limits(context_window),
                         conversation summarization for long threads,
                         fetches repo tree, grounding files, referenced files/commits,
-                        downloads text attachments, runs LLM with fetch-loop
-                        (LLM can request files via [FETCH: path] or [FETCH: path@branch],
-                        handler fetches and re-prompts, max 2 rounds)
+                        downloads text attachments, runs LLM with tool-calling loop
+                        (supports native OpenAI tool_calls and prompt-based ```tool
+                        JSON blocks, controlled by LLM_TOOL_MODE: native/prompt/auto)
+                        Tools: fetch_file, get_commit, search_code (max 5 rounds)
                         handle_run(): sandbox code execution via /run command
                         handle_index(): on-demand RAG re-indexing via /index command
     issue_assign.py   — Issue assigned to bot: greeting/triage (not yet implemented)
@@ -53,6 +54,15 @@ forge_bot/
                     Auth: Authorization: token {FORGE_API_TOKEN}
                     PRs and issues share index namespace for comments
     llm.py        — AsyncOpenAI wrapper, asyncio.Semaphore for concurrency control
+                    chat() returns string, chat_with_tools() returns ChatCompletion
+  tools/
+    base.py       — BaseTool ABC, ToolResult/ToolParameter dataclasses,
+                    to_openai_schema() and to_prompt_text() converters
+    registry.py   — ToolRegistry: register/get/execute tools, openai_schemas(),
+                    prompt_text() for prompt-based fallback
+    fetch_file.py — FetchFileTool: read file contents via Forge API
+    get_commit.py — GetCommitTool: retrieve commit info by SHA
+    search_code.py — SearchCodeTool: grep-like search across repo files
   sandbox/
     orchestrator.py — Create/destroy ephemeral containers via DinD, resource limits
     images.py       — Image registry, pre-pull logic, sandbox-images.json loading
@@ -97,7 +107,7 @@ forge_bot/
 5. **Sandbox defaults**: --network=none, --memory=512m, --cpus=1.0, --pids-limit=256, 60s timeout.
 6. **Sandbox images**: Pre-pull on startup (SANDBOX_PREPULL_IMAGES env), on-demand pull for rest.
 7. **Prompt templates**: Jinja2 .j2 files in prompts/ dir. Low temperature (0.2). Severity prefixes (🔴🟡💡).
-8. **Repo context in issues**: IssueCommentHandler fetches repo tree (using default_branch from webhook payload), proactively fetches grounding files (README.md, pyproject.toml, etc.), auto-fetches files mentioned in thread (max 5, 8k chars each), detects commit SHAs and fetches commit info, downloads text-based attachments. LLM can request additional files via `[FETCH: path]` or `[FETCH: path@branch]` markers — handler fetches and re-prompts up to 2 rounds.
+8. **Repo context in issues**: IssueCommentHandler fetches repo tree (using default_branch from webhook payload), proactively fetches grounding files (README.md, pyproject.toml, etc.), auto-fetches files mentioned in thread (max 5, 8k chars each), detects commit SHAs and fetches commit info, downloads text-based attachments. LLM uses tool-calling loop (fetch_file, get_commit, search_code) to request additional context — up to 5 rounds. Supports native OpenAI tool_calls and prompt-based ```tool JSON blocks (LLM_TOOL_MODE: native/prompt/auto).
 9. **Graceful degradation**: All context-fetching (tree, files, commits, attachments) is wrapped in try/except — failures logged at WARNING level, never block the reply.
 10. **Dynamic context limits**: `_context_limits(context_window)` derives max_recent_comments, summary_max_tokens, max_tree_entries, max_file_chars, max_grounding_file_chars from LLM_CONTEXT_WINDOW. Small models get fewer comments and smaller context; large models get more.
 11. **Conversation summarization**: When thread exceeds max_recent_comments, older comments are summarized via a dedicated LLM call (conversation_summary.j2, temp=0.1). Summary explicitly filters bot hallucinations. Fallback: naive truncation (first 2 + last comment) on LLM failure.
@@ -139,6 +149,7 @@ FORGE_INSTANCE_URL, FORGE_API_TOKEN, FORGE_WEBHOOK_SECRET, LLM_API_KEY
 LLM_BASE_URL (default: <https://api.openai.com/v1>), LLM_MODEL (gpt-4o),
 LLM_TEMPERATURE (0.2), LLM_MAX_TOKENS (4096), LLM_TIMEOUT (120),
 LLM_MAX_CONCURRENT (3), LLM_CONTEXT_WINDOW (8192 — match your model),
+LLM_TOOL_MODE (auto — native/prompt/auto),
 SANDBOX_ENABLED (true), SANDBOX_TIMEOUT (60),
 SANDBOX_PREPULL_IMAGES (python,node), RAG_ENABLED (false), LOG_LEVEL (INFO)
 
@@ -149,3 +160,10 @@ SANDBOX_PREPULL_IMAGES (python,node), RAG_ENABLED (false), LOG_LEVEL (INFO)
 - Pydantic models for all external data (webhook payloads, API responses).
 - Errors: log + post user-facing comment on Gitea, never crash the server.
 - Tests: pytest-asyncio for async, pytest-httpx for mocking HTTP.
+
+## Commit Practices
+
+- Make small, focused commits along the way — don't batch all changes into one giant commit.
+- Each commit should be a logical unit (e.g., "add tool base classes", "add tool tests", "update handler").
+- Write descriptive commit messages: `feat:`, `fix:`, `test:`, `docs:` prefixes.
+- Run tests before committing to verify nothing is broken.
