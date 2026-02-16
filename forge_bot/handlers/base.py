@@ -1,18 +1,22 @@
 """Abstract base class for all webhook event handlers."""
 
+from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 import jinja2
 
-from forge_bot.clients.forge import ForgeClient
+from forge_bot.api.client import GenericForgeClient
 from forge_bot.clients.llm import LLMClient
 from forge_bot.config import Settings
 
 logger = logging.getLogger("forge_bot.handlers")
 
+_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 _template_env = jinja2.Environment(
-    loader=jinja2.FileSystemLoader("prompts"),
+    loader=jinja2.FileSystemLoader(str(_PROMPTS_DIR)),
     autoescape=False,
     keep_trailing_newline=True,
 )
@@ -23,12 +27,12 @@ class BaseHandler(ABC):
 
     def __init__(
         self,
-        forge_client: ForgeClient,
+        api_client: GenericForgeClient,
         llm_client: LLMClient,
         settings: Settings,
         bot_username: str,
     ) -> None:
-        self.forge = forge_client
+        self.api = api_client
         self.llm = llm_client
         self.settings = settings
         self.bot_username = bot_username

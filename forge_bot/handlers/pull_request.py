@@ -1,5 +1,7 @@
 """Handler for pull_request webhook events (code review)."""
 
+from __future__ import annotations
+
 import logging
 
 from forge_bot.handlers.base import BaseHandler
@@ -26,67 +28,61 @@ class PullRequestHandler(BaseHandler):
             event.sender.login,
         )
 
-        # Fetch diff and changed file list in parallel-safe order.
+        # Fetch diff and changed file list.
         try:
-            diff_text = await self.forge.get_pull_diff(owner, repo, pr_num)
+            diff_text = await self.api.call(
+                "get_pull_diff", owner=owner, repo=repo, index=pr_num
+            )
         except Exception:
-            logger.exception("Failed to fetch diff for %s#%d", event.repository.full_name, pr_num)
+            logger.exception(
+                "Failed to fetch diff for %s#%d",
+                event.repository.full_name,
+                pr_num,
+            )
             diff_text = ""
 
         try:
-            changed_files = await self.forge.get_pull_files(owner, repo, pr_num)
+            changed_files = await self.api.call(
+                "get_pull_files", owner=owner, repo=repo, index=pr_num
+            )
         except Exception:
-            logger.exception("Failed to fetch files for %s#%d", event.repository.full_name, pr_num)
+            logger.exception(
+                "Failed to fetch files for %s#%d",
+                event.repository.full_name,
+                pr_num,
+            )
             changed_files = []
 
         if not diff_text:
             logger.warning(
                 "Empty diff for %s#%d, skipping review",
-                event.repository.full_name, pr_num,
+                event.repository.full_name,
+                pr_num,
             )
             return
+
+        # Ensure diff_text is a string (call() may return dict for json endpoints).
+        diff_text = str(diff_text)
 
         # Truncate very large diffs to avoid exceeding LLM context.
         if len(diff_text) > _MAX_DIFF_CHARS:
             diff_text = diff_text[:_MAX_DIFF_CHARS] + "\n\n... (diff truncated)"
 
         # Build a concise file summary for the prompt.
-        file_summary = "\n".join(
-            f"- {f.get('filename', '?')} (+{f.get('additions', 0)}/{-f.get('deletions', 0)})"
-            for f in changed_files
-        )
-
-        # RAG context (optional).
-        rag_context = None
-        if self.settings.rag_enabled:
-            try:
-                from forge_bot.rag.pipeline import RAGPipeline
-
-                pipeline = RAGPipeline(self.settings, self.forge)
-                changed_paths = [f.get("filename", "") for f in changed_files]
-                query = f"{event.pull_request.title}. Files: {', '.join(changed_paths)}"
-                rag_context = await pipeline.retrieve(
-                    owner, repo, query,
-                    top_k=self.settings.rag_top_k,
-                )
-                if rag_context:
-                    logger.info(
-                        "RAG context retrieved for PR %s#%d (%d chars)",
-                        event.repository.full_name, pr_num, len(rag_context),
-                    )
-            except Exception:
-                logger.warning(
-                    "RAG retrieval failed for PR %s#%d, continuing without",
-                    event.repository.full_name, pr_num,
-                    exc_info=True,
-                )
+        if isinstance(changed_files, list):
+            file_summary = "\n".join(
+                f"- {f.get('filename', '?')} "
+                f"(+{f.get('additions', 0)}/{-f.get('deletions', 0)})"
+                for f in changed_files
+            )
+        else:
+            file_summary = ""
 
         # Render the system prompt from the Jinja2 template.
         system_prompt = self.render_template(
             "pr_review.j2",
             repo_full_name=event.repository.full_name,
             pr_title=event.pull_request.title,
-            rag_context=rag_context,
         )
 
         # User message = PR description + file list + diff.
@@ -96,7 +92,11 @@ class PullRequestHandler(BaseHandler):
         try:
             review = await self.llm.chat(system_prompt, user_message)
         except Exception:
-            logger.exception("LLM call failed for PR %s#%d", event.repository.full_name, pr_num)
+            logger.exception(
+                "LLM call failed for PR %s#%d",
+                event.repository.full_name,
+                pr_num,
+            )
             review = (
                 "Sorry, I encountered an error while reviewing this PR. "
                 "Please try again later."
@@ -104,8 +104,16 @@ class PullRequestHandler(BaseHandler):
 
         # Post the review as a regular comment (inline reviews are unreliable).
         try:
-            await self.forge.post_comment(owner, repo, pr_num, review)
-            logger.info("Posted review on %s#%d", event.repository.full_name, pr_num)
+            await self.api.call(
+                "post_issue_comment",
+                owner=owner,
+                repo=repo,
+                index=pr_num,
+                body=review,
+            )
+            logger.info(
+                "Posted review on %s#%d", event.repository.full_name, pr_num
+            )
         except Exception:
             logger.exception(
                 "Failed to post review on %s#%d",
