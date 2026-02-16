@@ -123,6 +123,7 @@ def _make_event(
     comment_body: str = "@forge-bot hello",
     issue_body: str = "",
     default_branch: str = "main",
+    is_pull: bool = False,
 ) -> IssueCommentEvent:
     """Helper to create a minimal IssueCommentEvent."""
     return IssueCommentEvent.model_validate({
@@ -136,10 +137,10 @@ def _make_event(
             "number": 5,
             "title": "Question",
             "body": issue_body,
-            "pull_request": None,
+            "pull_request": {"id": 1} if is_pull else None,
             "assignees": [],
         },
-        "is_pull": False,
+        "is_pull": is_pull,
         "repository": {
             "full_name": "owner/repo",
             "default_branch": default_branch,
@@ -508,6 +509,115 @@ async def test_handle_preserves_short_bot_comments(
     system_prompt = _get_system_prompt(mock_llm)
     assert short_bot_reply in system_prompt
     assert "(response truncated)" not in system_prompt
+
+
+# --- PR context tests ---
+
+
+async def test_handle_fetches_pr_diff_when_is_pull(
+    mock_llm: AsyncMock,
+    settings: Settings,
+):
+    """When comment is on a PR, the handler fetches diff and files."""
+    event = _make_event(
+        comment_body="@forge-bot review this PR", is_pull=True,
+    )
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = []
+    mock_forge.get_repo_tree.return_value = [
+        {"path": "src/app.py", "type": "blob", "size": 100},
+    ]
+    mock_forge.get_file_content.return_value = "# content"
+    mock_forge.get_pull_diff.return_value = (
+        "diff --git a/src/app.py b/src/app.py\n"
+        "--- a/src/app.py\n"
+        "+++ b/src/app.py\n"
+        "@@ -1 +1,2 @@\n"
+        " old line\n"
+        "+new line\n"
+    )
+    mock_forge.get_pull_files.return_value = [
+        {"filename": "src/app.py", "additions": 1, "deletions": 0},
+    ]
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    mock_forge.get_pull_diff.assert_awaited_once_with("owner", "repo", 5)
+    mock_forge.get_pull_files.assert_awaited_once_with("owner", "repo", 5)
+
+    system_prompt = _get_system_prompt(mock_llm)
+    assert "PULL REQUEST DIFF" in system_prompt
+    assert "+new line" in system_prompt
+    assert "src/app.py" in system_prompt
+
+
+async def test_handle_no_pr_diff_for_regular_issue(
+    mock_forge: AsyncMock,
+    mock_llm: AsyncMock,
+    settings: Settings,
+):
+    """Regular issues should NOT fetch PR diff."""
+    event = _make_event(comment_body="@forge-bot hello")
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    mock_forge.get_pull_diff.assert_not_awaited()
+    mock_forge.get_pull_files.assert_not_awaited()
+
+    system_prompt = _get_system_prompt(mock_llm)
+    assert "PULL REQUEST DIFF" not in system_prompt
+
+
+async def test_handle_pr_diff_truncated(
+    mock_llm: AsyncMock,
+    settings: Settings,
+):
+    """Large PR diffs should be truncated."""
+    event = _make_event(
+        comment_body="@forge-bot check this", is_pull=True,
+    )
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = []
+    mock_forge.get_repo_tree.return_value = []
+    mock_forge.get_pull_diff.return_value = "x" * 100_000
+    mock_forge.get_pull_files.return_value = []
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    system_prompt = _get_system_prompt(mock_llm)
+    assert "(diff truncated)" in system_prompt
+
+
+async def test_handle_pr_diff_fetch_failure_graceful(
+    mock_llm: AsyncMock,
+    settings: Settings,
+):
+    """Failed PR diff fetch should not crash the handler."""
+    event = _make_event(
+        comment_body="@forge-bot review", is_pull=True,
+    )
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = []
+    mock_forge.get_repo_tree.return_value = []
+    mock_forge.get_pull_diff.side_effect = RuntimeError("404")
+    mock_forge.get_pull_files.side_effect = RuntimeError("404")
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    # Should still post a reply (just without PR diff).
+    mock_forge.post_comment.assert_awaited_once()
+    system_prompt = _get_system_prompt(mock_llm)
+    assert "PULL REQUEST DIFF" not in system_prompt
 
 
 # --- Tool loop tests ---
@@ -935,6 +1045,7 @@ def test_context_limits_small_window():
     assert limits["max_tree_entries"] == 51
     assert limits["max_file_chars"] == 4096
     assert limits["max_grounding_file_chars"] == 2048
+    assert limits["max_pr_diff_chars"] == 8192
 
 
 def test_context_limits_large_window():
@@ -944,6 +1055,7 @@ def test_context_limits_large_window():
     assert limits["max_tree_entries"] == 200
     assert limits["max_file_chars"] == 8000
     assert limits["max_grounding_file_chars"] == 4000
+    assert limits["max_pr_diff_chars"] == 30_000
 
 
 def test_context_limits_default_window():
@@ -951,6 +1063,7 @@ def test_context_limits_default_window():
     assert limits["max_recent_comments"] == 4
     assert limits["summary_max_tokens"] == 512
     assert limits["max_tree_entries"] == 200
+    assert limits["max_pr_diff_chars"] == 30_000
 
 
 # --- Conversation summarization tests ---

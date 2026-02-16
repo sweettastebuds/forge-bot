@@ -49,6 +49,16 @@ The following files exist in the repository. You cannot read their contents unle
 ```
 {% endfor %}
 {% endif %}
+{% if pr_diff %}
+=== PULL REQUEST DIFF (real data — this is the actual diff for this PR) ===
+{% if pr_files_summary %}
+**Changed files:**
+{{ pr_files_summary }}
+{% endif %}
+```diff
+{{ pr_diff }}
+```
+{% endif %}
 {% if commit_context %}
 === COMMIT INFORMATION (real data — use ONLY these commits) ===
 {% for commit in commit_context %}

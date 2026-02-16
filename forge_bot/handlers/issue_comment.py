@@ -41,6 +41,7 @@ def _context_limits(context_window: int) -> dict[str, int]:
         "max_tree_entries": min(max(context_window // 40, 50), 200),
         "max_file_chars": min(max(context_window * 2, 2000), 8000),
         "max_grounding_file_chars": min(max(context_window, 1000), 4000),
+        "max_pr_diff_chars": min(max(context_window * 4, 4000), 30_000),
     }
 
 # --- Grounding files to fetch proactively (in priority order) ---
@@ -368,6 +369,15 @@ class IssueCommentHandler(BaseHandler):
             event, raw_comments, instance_url
         )
 
+        # --- PR context (when comment is on a pull request) ---
+        pr_diff = ""
+        pr_files_summary = ""
+        is_pull = event.is_pull or event.issue.is_pull
+        if is_pull:
+            pr_diff, pr_files_summary = await self._fetch_pr_context(
+                owner, repo, issue_num, limits,
+            )
+
         # --- RAG context (optional) ---
         rag_context = None
         if self.settings.rag_enabled:
@@ -407,6 +417,8 @@ class IssueCommentHandler(BaseHandler):
             rag_context=rag_context,
             default_branch=default_branch,
             limits=limits,
+            pr_diff=pr_diff,
+            pr_files_summary=pr_files_summary,
         )
 
         # Post the reply back to the issue/PR.
@@ -443,6 +455,8 @@ class IssueCommentHandler(BaseHandler):
         default_branch: str,
         limits: dict[str, int],
         rag_context: str | None = None,
+        pr_diff: str = "",
+        pr_files_summary: str = "",
     ) -> str:
         """Call the LLM with tool support, executing tool calls in a loop."""
         from forge_bot.tools.fetch_file import FetchFileTool
@@ -491,6 +505,8 @@ class IssueCommentHandler(BaseHandler):
             attachments=attachments,
             rag_context=rag_context,
             tool_descriptions=tool_descriptions,
+            pr_diff=pr_diff,
+            pr_files_summary=pr_files_summary,
         )
 
         messages: list[dict[str, Any]] = [
@@ -539,6 +555,8 @@ class IssueCommentHandler(BaseHandler):
                         attachments=attachments,
                         rag_context=rag_context,
                         tool_descriptions=tool_descriptions,
+                        pr_diff=pr_diff,
+                        pr_files_summary=pr_files_summary,
                     )
                     messages = [
                         {"role": "system", "content": system_prompt},
@@ -571,6 +589,8 @@ class IssueCommentHandler(BaseHandler):
         attachments: list[dict[str, str]],
         rag_context: str | None,
         tool_descriptions: str,
+        pr_diff: str = "",
+        pr_files_summary: str = "",
     ) -> str:
         """Render the system prompt with optional tool descriptions."""
         return self.render_template(
@@ -586,6 +606,8 @@ class IssueCommentHandler(BaseHandler):
             attachments=attachments,
             commit_context=commit_context,
             tool_descriptions=tool_descriptions,
+            pr_diff=pr_diff,
+            pr_files_summary=pr_files_summary,
         )
 
     async def _native_tool_round(
@@ -835,6 +857,54 @@ class IssueCommentHandler(BaseHandler):
             except Exception:
                 logger.warning("Could not fetch commit %s", sha)
         return fetched
+
+    async def _fetch_pr_context(
+        self,
+        owner: str,
+        repo: str,
+        pr_num: int,
+        limits: dict[str, int],
+    ) -> tuple[str, str]:
+        """Fetch the PR diff and changed file summary.
+
+        Returns (diff_text, files_summary). Failures return empty strings.
+        """
+        max_diff_chars = limits["max_pr_diff_chars"]
+        diff_text = ""
+        files_summary = ""
+
+        try:
+            diff_text = await self.forge.get_pull_diff(owner, repo, pr_num)
+            if len(diff_text) > max_diff_chars:
+                diff_text = (
+                    diff_text[:max_diff_chars] + "\n\n... (diff truncated)"
+                )
+            logger.info(
+                "Fetched PR diff for %s/%s#%d (%d chars)",
+                owner, repo, pr_num, len(diff_text),
+            )
+        except Exception:
+            logger.warning(
+                "Could not fetch PR diff for %s/%s#%d",
+                owner, repo, pr_num,
+            )
+
+        try:
+            changed_files = await self.forge.get_pull_files(
+                owner, repo, pr_num,
+            )
+            files_summary = "\n".join(
+                f"- {f.get('filename', '?')} "
+                f"(+{f.get('additions', 0)}/{-f.get('deletions', 0)})"
+                for f in changed_files
+            )
+        except Exception:
+            logger.warning(
+                "Could not fetch PR files for %s/%s#%d",
+                owner, repo, pr_num,
+            )
+
+        return diff_text, files_summary
 
     async def _collect_attachments(
         self,
