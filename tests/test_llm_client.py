@@ -80,3 +80,63 @@ async def test_chat_handles_empty_content(settings: Settings):
         await client.close()
 
     assert result == ""
+
+
+# --- chat_with_tools tests ---
+
+
+async def test_chat_with_tools_passes_tools(settings: Settings):
+    """Tools kwarg should be forwarded to the OpenAI client."""
+    mock_create = AsyncMock(return_value=_mock_completion("response"))
+    with patch("forge_bot.clients.llm.AsyncOpenAI") as mock_cls:
+        mock_cls.return_value.chat.completions.create = mock_create
+        mock_cls.return_value.close = AsyncMock()
+
+        client = LLMClient(settings)
+        tools = [{"type": "function", "function": {"name": "test_tool"}}]
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "usr"},
+        ]
+        await client.chat_with_tools(messages, tools=tools)
+        await client.close()
+
+    call_kwargs = mock_create.call_args.kwargs
+    assert call_kwargs["tools"] == tools
+    assert call_kwargs["messages"] == messages
+
+
+async def test_chat_with_tools_returns_full_response(settings: Settings):
+    """Should return the full ChatCompletion, not just content string."""
+    completion = _mock_completion("Hello")
+    mock_create = AsyncMock(return_value=completion)
+    with patch("forge_bot.clients.llm.AsyncOpenAI") as mock_cls:
+        mock_cls.return_value.chat.completions.create = mock_create
+        mock_cls.return_value.close = AsyncMock()
+
+        client = LLMClient(settings)
+        result = await client.chat_with_tools(
+            [{"role": "user", "content": "hi"}],
+        )
+        await client.close()
+
+    # Should be the full response object, not a string.
+    assert result is completion
+    assert result.choices[0].message.content == "Hello"
+
+
+async def test_chat_with_tools_no_tools(settings: Settings):
+    """When tools is None, the 'tools' kwarg should not be passed."""
+    mock_create = AsyncMock(return_value=_mock_completion("OK"))
+    with patch("forge_bot.clients.llm.AsyncOpenAI") as mock_cls:
+        mock_cls.return_value.chat.completions.create = mock_create
+        mock_cls.return_value.close = AsyncMock()
+
+        client = LLMClient(settings)
+        await client.chat_with_tools(
+            [{"role": "user", "content": "hi"}],
+        )
+        await client.close()
+
+    call_kwargs = mock_create.call_args.kwargs
+    assert "tools" not in call_kwargs
