@@ -514,6 +514,13 @@ class IssueCommentHandler(BaseHandler):
             {"role": "user", "content": event.comment.body},
         ]
 
+        # --- Trace state ---
+        prompt_chars = len(system_prompt)
+        tool_calls_log: list[str] = []
+        fallback_triggered = False
+        final_mode = "native" if use_native else "prompt"
+        completed_rounds = 0
+
         for round_num in range(_MAX_TOOL_ROUNDS):
             try:
                 if use_native:
@@ -525,11 +532,29 @@ class IssueCommentHandler(BaseHandler):
                         messages, registry, event, issue_num, round_num,
                     )
 
+                completed_rounds = round_num + 1
+
                 if content is not None:
                     # Tool round returned final content — done.
+                    self._log_trace(
+                        event, issue_num, final_mode, completed_rounds,
+                        tool_calls_log, fallback_triggered, prompt_chars,
+                        len(content),
+                    )
                     return content
 
-                # None means we added tool results and should loop.
+                # None means tool calls were made — record them.
+                # Scan the last messages for tool results.
+                for msg in reversed(messages):
+                    if msg.get("role") == "tool":
+                        tool_calls_log.append(msg.get("tool_call_id", "?"))
+                        break
+                    if msg.get("role") == "user" and "**" in msg.get(
+                        "content", "",
+                    ):
+                        # Prompt-mode tool results.
+                        tool_calls_log.append("prompt-tool")
+                        break
                 continue
 
             except Exception:
@@ -542,6 +567,8 @@ class IssueCommentHandler(BaseHandler):
                         exc_info=True,
                     )
                     use_native = False
+                    fallback_triggered = True
+                    final_mode = "prompt"
                     _models_without_tool_support.add(model_name)
                     tool_descriptions = registry.prompt_text()
                     system_prompt = self._build_system_prompt(
@@ -558,6 +585,7 @@ class IssueCommentHandler(BaseHandler):
                         pr_diff=pr_diff,
                         pr_files_summary=pr_files_summary,
                     )
+                    prompt_chars = len(system_prompt)
                     messages = [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": event.comment.body},
@@ -568,13 +596,49 @@ class IssueCommentHandler(BaseHandler):
                     "LLM call failed for %s#%d (round %d)",
                     event.repository.full_name, issue_num, round_num,
                 )
-                return (
+                reply = (
                     "Sorry, I encountered an error while generating a "
                     "response. Please try again later."
                 )
+                self._log_trace(
+                    event, issue_num, final_mode, round_num + 1,
+                    tool_calls_log, fallback_triggered, prompt_chars,
+                    len(reply),
+                )
+                return reply
 
         # Exhausted all rounds — extract the last assistant content.
-        return self._extract_last_reply(messages)
+        reply = self._extract_last_reply(messages)
+        self._log_trace(
+            event, issue_num, final_mode, _MAX_TOOL_ROUNDS,
+            tool_calls_log, fallback_triggered, prompt_chars, len(reply),
+        )
+        return reply
+
+    @staticmethod
+    def _log_trace(
+        event: IssueCommentEvent,
+        issue_num: int,
+        mode: str,
+        rounds: int,
+        tool_calls: list[str],
+        fallback: bool,
+        prompt_chars: int,
+        reply_chars: int,
+    ) -> None:
+        """Log a structured per-request summary for debugging."""
+        logger.info(
+            "TRACE %s#%d | mode=%s rounds=%d tools=%d "
+            "fallback=%s prompt=%dc reply=%dc",
+            event.repository.full_name,
+            issue_num,
+            mode,
+            rounds,
+            len(tool_calls),
+            fallback,
+            prompt_chars,
+            reply_chars,
+        )
 
     def _build_system_prompt(
         self,

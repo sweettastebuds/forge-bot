@@ -1247,6 +1247,34 @@ async def test_prompt_contains_anti_hallucination_rules(
     assert "simulating" in system_prompt
 
 
+async def test_trace_log_emitted(
+    mock_llm: AsyncMock,
+    settings: Settings,
+    caplog: pytest.LogCaptureFixture,
+):
+    """The handler emits a TRACE log line at the end of each request."""
+    event = _make_event(comment_body="@forge-bot hello")
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = []
+    mock_forge.get_repo_tree.return_value = []
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+
+    import logging
+    with caplog.at_level(logging.INFO, logger="forge_bot.handlers.issue_comment"):
+        await handler.handle(event)
+
+    trace_lines = [r for r in caplog.records if "TRACE" in r.message]
+    assert len(trace_lines) == 1
+    msg = trace_lines[0].message
+    assert "mode=" in msg
+    assert "rounds=" in msg
+    assert "prompt=" in msg
+    assert "reply=" in msg
+
+
 async def test_prompt_contains_capabilities_section(
     mock_llm: AsyncMock,
     settings: Settings,
