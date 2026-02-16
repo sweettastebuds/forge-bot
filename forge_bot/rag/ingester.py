@@ -33,11 +33,10 @@ def _should_skip_path(path: str) -> bool:
         if part in _SKIP_DIRS:
             return True
 
-    # Check extension
-    dot_pos = path.rfind(".")
-    if dot_pos != -1:
-        ext = path[dot_pos:].lower()
-        if ext in _SKIP_EXTENSIONS:
+    # Check extension (including compound extensions like .min.js)
+    filename = parts[-1].lower()
+    for ext in _SKIP_EXTENSIONS:
+        if filename.endswith(ext):
             return True
 
     return False
