@@ -235,6 +235,45 @@ class IssueCommentHandler(BaseHandler):
 
         return "\n".join(lines)
 
+    # --- RAG /index handling ---
+
+    async def handle_index(self, event: IssueCommentEvent) -> None:
+        """Re-index the repository and post a status comment."""
+        owner, repo = event.repository.full_name.split("/", 1)
+        issue_num = event.issue.number
+        default_branch = event.repository.default_branch
+
+        if not self.settings.rag_enabled:
+            await self.forge.post_comment(
+                owner, repo, issue_num,
+                "RAG indexing is disabled on this instance "
+                "(set `RAG_ENABLED=true` to enable).",
+            )
+            return
+
+        try:
+            from forge_bot.rag.pipeline import RAGPipeline
+
+            pipeline = RAGPipeline(self.settings, self.forge)
+            count = await pipeline.ensure_indexed(
+                owner, repo, default_branch, force=True,
+            )
+            await self.forge.post_comment(
+                owner, repo, issue_num,
+                f"Re-indexed repository — **{count}** chunks stored.",
+            )
+            logger.info(
+                "Re-indexed %s: %d chunks", event.repository.full_name, count,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Failed to index %s", event.repository.full_name,
+            )
+            await self.forge.post_comment(
+                owner, repo, issue_num,
+                f"Indexing failed: `{exc}`",
+            )
+
     # --- @mention Q&A handling ---
 
     async def handle(self, event: IssueCommentEvent) -> None:
@@ -316,6 +355,29 @@ class IssueCommentHandler(BaseHandler):
             event, raw_comments, instance_url
         )
 
+        # --- RAG context (optional) ---
+        rag_context = None
+        if self.settings.rag_enabled:
+            try:
+                from forge_bot.rag.pipeline import RAGPipeline
+
+                pipeline = RAGPipeline(self.settings, self.forge)
+                rag_context = await pipeline.retrieve(
+                    owner, repo, event.comment.body,
+                    top_k=self.settings.rag_top_k,
+                )
+                if rag_context:
+                    logger.info(
+                        "RAG context retrieved for %s#%d (%d chars)",
+                        event.repository.full_name, issue_num, len(rag_context),
+                    )
+            except Exception:
+                logger.warning(
+                    "RAG retrieval failed for %s#%d, continuing without",
+                    event.repository.full_name, issue_num,
+                    exc_info=True,
+                )
+
         # --- Build prompt and run LLM with fetch-loop ---
         reply = await self._run_with_fetch_loop(
             owner=owner,
@@ -329,6 +391,7 @@ class IssueCommentHandler(BaseHandler):
             file_context=file_context,
             commit_context=commit_context,
             attachments=attachments,
+            rag_context=rag_context,
             default_branch=default_branch,
             limits=limits,
         )
@@ -366,6 +429,7 @@ class IssueCommentHandler(BaseHandler):
         attachments: list[dict[str, str]],
         default_branch: str,
         limits: dict[str, int],
+        rag_context: str | None = None,
     ) -> str:
         """Call the LLM, and if it requests files via [FETCH:], fetch and re-prompt."""
         max_file_chars = limits["max_file_chars"]
@@ -375,7 +439,7 @@ class IssueCommentHandler(BaseHandler):
                 repo_full_name=event.repository.full_name,
                 issue_number=issue_num,
                 issue_title=event.issue.title,
-                rag_context=None,
+                rag_context=rag_context,
                 thread_comments=thread_comments,
                 conversation_summary=conversation_summary,
                 repo_tree=repo_tree_text,

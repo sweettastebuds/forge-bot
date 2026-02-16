@@ -56,12 +56,37 @@ class PullRequestHandler(BaseHandler):
             for f in changed_files
         )
 
+        # RAG context (optional).
+        rag_context = None
+        if self.settings.rag_enabled:
+            try:
+                from forge_bot.rag.pipeline import RAGPipeline
+
+                pipeline = RAGPipeline(self.settings, self.forge)
+                changed_paths = [f.get("filename", "") for f in changed_files]
+                query = f"{event.pull_request.title}. Files: {', '.join(changed_paths)}"
+                rag_context = await pipeline.retrieve(
+                    owner, repo, query,
+                    top_k=self.settings.rag_top_k,
+                )
+                if rag_context:
+                    logger.info(
+                        "RAG context retrieved for PR %s#%d (%d chars)",
+                        event.repository.full_name, pr_num, len(rag_context),
+                    )
+            except Exception:
+                logger.warning(
+                    "RAG retrieval failed for PR %s#%d, continuing without",
+                    event.repository.full_name, pr_num,
+                    exc_info=True,
+                )
+
         # Render the system prompt from the Jinja2 template.
         system_prompt = self.render_template(
             "pr_review.j2",
             repo_full_name=event.repository.full_name,
             pr_title=event.pull_request.title,
-            rag_context=None,
+            rag_context=rag_context,
         )
 
         # User message = PR description + file list + diff.

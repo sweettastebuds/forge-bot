@@ -34,6 +34,12 @@ def _mentions_user(text: str, username: str) -> bool:
     return bool(re.search(pattern, text, re.MULTILINE))
 
 
+def _has_index_command(text: str, prefix: str = "/") -> bool:
+    """Return True if *text* contains a /index command."""
+    pattern = rf"(?:^|\s){re.escape(prefix)}index(?:\s|$)"
+    return bool(re.search(pattern, text, re.MULTILINE))
+
+
 async def dispatch(
     event_type: str,
     payload: dict[str, Any],
@@ -108,6 +114,13 @@ async def dispatch(
                     event.issue.number,
                 )
                 await handler.handle_run(event, run_cmd)
+            elif _has_index_command(event.comment.body, settings.bot_command_prefix):
+                logger.info(
+                    "Dispatching /index on %s#%d",
+                    event.repository.full_name,
+                    event.issue.number,
+                )
+                await handler.handle_index(event)
             else:
                 await handler.handle(event)
         return
