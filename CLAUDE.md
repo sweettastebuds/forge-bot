@@ -4,6 +4,8 @@
 
 forge-bot: Python webhook service for Gitea/Forgejo AI bot. FastAPI receives webhooks, routes to handlers, calls OpenAI-compatible LLM, posts results back via REST API. Docker-in-Docker for sandboxed code execution.
 
+See [docs/TODO.md](docs/TODO.md) for current work items and backlog.
+
 ## Stack
 
 - Python 3.12, FastAPI, Uvicorn, httpx, pydantic-settings
