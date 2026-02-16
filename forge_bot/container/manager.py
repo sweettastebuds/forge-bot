@@ -81,7 +81,7 @@ class ContainerManager:
         authed_url = self._inject_token(self._clone_url, self._token)
 
         init_script = (
-            f"git clone --depth=50 '{authed_url}' /workspace"
+            f"git clone --depth=50 --no-single-branch '{authed_url}' /workspace"
             f" && cd /workspace"
             f" && git checkout '{self._ref}'"
             f" && echo 'FORGE_READY'"
