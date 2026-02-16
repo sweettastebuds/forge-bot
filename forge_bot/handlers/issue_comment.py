@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any
@@ -19,7 +20,7 @@ _MAX_GROUNDING_FILES = 3
 _MAX_COMMIT_FETCHES = 3
 _MAX_ATTACHMENT_DOWNLOADS = 3
 _MAX_ATTACHMENT_CONTENT_CHARS = 6_000
-_MAX_FETCH_ROUNDS = 2
+_MAX_TOOL_ROUNDS = 5
 
 
 def _context_limits(context_window: int) -> dict[str, int]:
@@ -73,6 +74,7 @@ _COMMIT_SHA_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _FETCH_REQUEST_RE = re.compile(r"\[FETCH:\s*([^\]]+)\]")
+_TOOL_CALL_RE = re.compile(r"```tool\s*\n(.*?)\n```", re.DOTALL)
 
 
 # --- Helpers ---
@@ -110,19 +112,12 @@ def _get_extension(url: str) -> str:
     return segment[dot_pos:].lower()
 
 
-def _parse_fetch_request(raw: str) -> tuple[str, str]:
-    """Parse 'path/to/file@branch' into (path, ref).
-
-    Returns (path, "") if no branch is specified.
-    """
-    raw = raw.strip()
-    if "@" in raw:
-        path, ref = raw.rsplit("@", 1)
-        return path.strip(), ref.strip()
-    return raw, ""
-
-
 _MAX_OUTPUT_CHARS = 8_000
+
+_FALLBACK_REPLY = (
+    "I looked into it but wasn't able to form a complete "
+    "answer. Could you provide more details?"
+)
 
 
 class IssueCommentHandler(BaseHandler):
@@ -378,8 +373,8 @@ class IssueCommentHandler(BaseHandler):
                     exc_info=True,
                 )
 
-        # --- Build prompt and run LLM with fetch-loop ---
-        reply = await self._run_with_fetch_loop(
+        # --- Build prompt and run LLM with tool-calling loop ---
+        reply = await self._run_with_tool_loop(
             owner=owner,
             repo=repo,
             event=event,
@@ -411,9 +406,9 @@ class IssueCommentHandler(BaseHandler):
                 issue_num,
             )
 
-    # --- LLM call with fetch loop ---
+    # --- LLM call with tool-calling loop ---
 
-    async def _run_with_fetch_loop(
+    async def _run_with_tool_loop(
         self,
         *,
         owner: str,
@@ -431,95 +426,254 @@ class IssueCommentHandler(BaseHandler):
         limits: dict[str, int],
         rag_context: str | None = None,
     ) -> str:
-        """Call the LLM, and if it requests files via [FETCH:], fetch and re-prompt."""
+        """Call the LLM with tool support, executing tool calls in a loop."""
+        from forge_bot.tools.fetch_file import FetchFileTool
+        from forge_bot.tools.get_commit import GetCommitTool
+        from forge_bot.tools.registry import ToolRegistry
+        from forge_bot.tools.search_code import SearchCodeTool
+
         max_file_chars = limits["max_file_chars"]
-        for round_num in range(_MAX_FETCH_ROUNDS + 1):
-            system_prompt = self.render_template(
-                "issue_respond.j2",
-                repo_full_name=event.repository.full_name,
-                issue_number=issue_num,
-                issue_title=event.issue.title,
-                rag_context=rag_context,
-                thread_comments=thread_comments,
-                conversation_summary=conversation_summary,
-                repo_tree=repo_tree_text,
-                file_context=file_context,
-                attachments=attachments,
-                commit_context=commit_context,
-            )
 
-            user_message = event.comment.body
+        # Build per-request tool registry.
+        registry = ToolRegistry()
+        registry.register(FetchFileTool(
+            self.forge, owner, repo, default_branch,
+            max_chars=max_file_chars,
+        ))
+        registry.register(GetCommitTool(self.forge, owner, repo))
+        registry.register(SearchCodeTool(
+            self.forge, owner, repo, default_branch,
+            tree_paths=sorted(tree_paths),
+        ))
 
+        # Determine tool mode.
+        tool_mode = self.settings.llm_tool_mode
+        use_native = tool_mode in ("native", "auto")
+
+        # For prompt mode, inject tool descriptions into the system prompt.
+        tool_descriptions = "" if use_native else registry.prompt_text()
+
+        system_prompt = self._build_system_prompt(
+            event=event,
+            issue_num=issue_num,
+            thread_comments=thread_comments,
+            conversation_summary=conversation_summary,
+            repo_tree_text=repo_tree_text,
+            file_context=file_context,
+            commit_context=commit_context,
+            attachments=attachments,
+            rag_context=rag_context,
+            tool_descriptions=tool_descriptions,
+        )
+
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": event.comment.body},
+        ]
+
+        for round_num in range(_MAX_TOOL_ROUNDS):
             try:
-                reply = await self.llm.chat(system_prompt, user_message)
+                if use_native:
+                    content = await self._native_tool_round(
+                        messages, registry, event, issue_num, round_num,
+                    )
+                else:
+                    content = await self._prompt_tool_round(
+                        messages, registry, event, issue_num, round_num,
+                    )
+
+                if content is not None:
+                    # Tool round returned final content — done.
+                    return content
+
+                # None means we added tool results and should loop.
+                continue
+
             except Exception:
+                if use_native and tool_mode == "auto":
+                    # Auto mode: try falling back to prompt mode.
+                    logger.warning(
+                        "Native tool calling failed for %s#%d, "
+                        "falling back to prompt mode",
+                        event.repository.full_name, issue_num,
+                        exc_info=True,
+                    )
+                    use_native = False
+                    tool_descriptions = registry.prompt_text()
+                    system_prompt = self._build_system_prompt(
+                        event=event,
+                        issue_num=issue_num,
+                        thread_comments=thread_comments,
+                        conversation_summary=conversation_summary,
+                        repo_tree_text=repo_tree_text,
+                        file_context=file_context,
+                        commit_context=commit_context,
+                        attachments=attachments,
+                        rag_context=rag_context,
+                        tool_descriptions=tool_descriptions,
+                    )
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": event.comment.body},
+                    ]
+                    continue
+
                 logger.exception(
                     "LLM call failed for %s#%d (round %d)",
-                    event.repository.full_name,
-                    issue_num,
-                    round_num,
+                    event.repository.full_name, issue_num, round_num,
                 )
                 return (
                     "Sorry, I encountered an error while generating a "
                     "response. Please try again later."
                 )
 
-            # Check for [FETCH:] requests in the reply.
-            fetch_requests = _FETCH_REQUEST_RE.findall(reply)
-            if not fetch_requests or round_num >= _MAX_FETCH_ROUNDS:
-                # No more fetches or max rounds reached — return the reply.
-                # Strip any leftover [FETCH:] markers from the final reply.
-                clean = _FETCH_REQUEST_RE.sub("", reply).strip()
-                return clean if clean else (
-                    "I looked into it but wasn't able to form a complete "
-                    "answer. Could you provide more details?"
-                )
+        # Exhausted all rounds — extract the last assistant content.
+        return self._extract_last_reply(messages)
 
-            # Fetch the requested files and add to context.
-            already = {f["path"] for f in file_context}
-            new_files = 0
-            for raw_request in fetch_requests:
-                path, ref = _parse_fetch_request(raw_request)
-                if path in already:
-                    continue
-                effective_ref = ref or default_branch
+    def _build_system_prompt(
+        self,
+        *,
+        event: IssueCommentEvent,
+        issue_num: int,
+        thread_comments: list[dict[str, str]],
+        conversation_summary: str | None,
+        repo_tree_text: str,
+        file_context: list[dict[str, str]],
+        commit_context: list[dict[str, str]],
+        attachments: list[dict[str, str]],
+        rag_context: str | None,
+        tool_descriptions: str,
+    ) -> str:
+        """Render the system prompt with optional tool descriptions."""
+        return self.render_template(
+            "issue_respond.j2",
+            repo_full_name=event.repository.full_name,
+            issue_number=issue_num,
+            issue_title=event.issue.title,
+            rag_context=rag_context,
+            thread_comments=thread_comments,
+            conversation_summary=conversation_summary,
+            repo_tree=repo_tree_text,
+            file_context=file_context,
+            attachments=attachments,
+            commit_context=commit_context,
+            tool_descriptions=tool_descriptions,
+        )
+
+    async def _native_tool_round(
+        self,
+        messages: list[dict[str, Any]],
+        registry: Any,
+        event: IssueCommentEvent,
+        issue_num: int,
+        round_num: int,
+    ) -> str | None:
+        """Execute one round of native tool calling.
+
+        Returns the final reply text, or None if tool calls were made
+        and the loop should continue.
+        """
+        response = await self.llm.chat_with_tools(
+            messages, tools=registry.openai_schemas(),
+        )
+        choice = response.choices[0]
+        message = choice.message
+
+        if message.tool_calls:
+            # Append the assistant message with tool_calls.
+            messages.append(message.model_dump())
+
+            for tc in message.tool_calls:
+                args = (
+                    json.loads(tc.function.arguments)
+                    if isinstance(tc.function.arguments, str)
+                    else tc.function.arguments
+                )
+                result = await registry.execute(tc.function.name, args)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result.content,
+                })
+                logger.info(
+                    "Tool round %d: %s(%s) → %s [%s#%d]",
+                    round_num + 1, tc.function.name, args,
+                    "OK" if result.success else "FAIL",
+                    event.repository.full_name, issue_num,
+                )
+            return None  # Continue loop.
+
+        # No tool calls — return the final content.
+        content = message.content or ""
+        clean = self._clean_reply(content)
+        return clean or _FALLBACK_REPLY
+
+    async def _prompt_tool_round(
+        self,
+        messages: list[dict[str, Any]],
+        registry: Any,
+        event: IssueCommentEvent,
+        issue_num: int,
+        round_num: int,
+    ) -> str | None:
+        """Execute one round of prompt-based tool calling.
+
+        Returns the final reply text, or None if tool calls were parsed
+        and the loop should continue.
+        """
+        response = await self.llm.chat_with_tools(messages)
+        content = response.choices[0].message.content or ""
+
+        tool_blocks = _TOOL_CALL_RE.findall(content)
+        if tool_blocks:
+            messages.append({"role": "assistant", "content": content})
+            tool_results: list[str] = []
+            for tc_json in tool_blocks:
                 try:
-                    content = await self.forge.get_file_content(
-                        owner, repo, path, ref=effective_ref
+                    tc_data = json.loads(tc_json)
+                    result = await registry.execute(
+                        tc_data["name"], tc_data.get("arguments", {}),
                     )
-                    if len(content) > max_file_chars:
-                        content = (
-                            content[:max_file_chars] + "\n... (truncated)"
-                        )
-                    label = f"{path}@{ref}" if ref else path
-                    file_context.append({"path": label, "content": content})
-                    already.add(path)
-                    new_files += 1
+                    tool_results.append(
+                        f"**{result.tool_name}**: {result.content}"
+                    )
                     logger.info(
-                        "Fetch-loop: fetched %s (ref=%s)", path, effective_ref
+                        "Tool round %d: %s → %s [%s#%d]",
+                        round_num + 1, tc_data["name"],
+                        "OK" if result.success else "FAIL",
+                        event.repository.full_name, issue_num,
                     )
-                except Exception:
-                    logger.warning(
-                        "Fetch-loop: could not fetch %s (ref=%s)",
-                        path,
-                        effective_ref,
-                    )
+                except (json.JSONDecodeError, KeyError) as exc:
+                    tool_results.append(f"Error parsing tool call: {exc}")
+            messages.append({
+                "role": "user",
+                "content": "Tool results:\n" + "\n".join(tool_results),
+            })
+            return None  # Continue loop.
 
-            if new_files == 0:
-                # All requests failed or were duplicates — return as-is.
-                clean = _FETCH_REQUEST_RE.sub("", reply).strip()
-                return clean if clean else (
-                    "I looked into it but wasn't able to form a complete "
-                    "answer. Could you provide more details?"
-                )
+        # No tool calls — clean and return.
+        clean = self._clean_reply(content)
+        return clean or _FALLBACK_REPLY
 
-            logger.info(
-                "Fetch-loop round %d: fetched %d new files, re-prompting",
-                round_num + 1,
-                new_files,
-            )
+    @staticmethod
+    def _clean_reply(text: str) -> str:
+        """Remove stray tool/fetch markers from final reply text."""
+        text = _TOOL_CALL_RE.sub("", text)
+        text = _FETCH_REQUEST_RE.sub("", text)
+        return text.strip()
 
-        return reply  # pragma: no cover — safety fallback
+    @staticmethod
+    def _extract_last_reply(messages: list[dict[str, Any]]) -> str:
+        """Extract the last assistant content from a message list."""
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    clean = _TOOL_CALL_RE.sub("", content)
+                    clean = _FETCH_REQUEST_RE.sub("", clean).strip()
+                    if clean:
+                        return clean
+        return _FALLBACK_REPLY
 
     # --- Context gathering methods ---
 
