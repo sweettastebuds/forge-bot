@@ -187,6 +187,10 @@ class IssueCommentHandler(BaseHandler):
                     tools=registry.openai_schemas(),
                 )
             except Exception:
+                logger.exception(
+                    "chat_with_tools failed (round %d), retrying without tools",
+                    round_num,
+                )
                 # Fallback: try simple chat without tools
                 try:
                     response = await self.llm.chat(
@@ -195,7 +199,7 @@ class IssueCommentHandler(BaseHandler):
                     )
                     return str(response), all_tool_results
                 except Exception:
-                    logger.exception("LLM call failed (round %d)", round_num)
+                    logger.exception("LLM chat fallback also failed (round %d)", round_num)
                     return error_reply, all_tool_results
 
             # Extract tool calls from response
@@ -203,6 +207,11 @@ class IssueCommentHandler(BaseHandler):
 
             if not tool_calls:
                 final_text = self._extract_text(response)
+                logger.info(
+                    "Round %d: LLM returned text response (%d chars)",
+                    round_num,
+                    len(final_text),
+                )
                 if final_text:
                     return final_text, all_tool_results
                 break
@@ -240,6 +249,11 @@ class IssueCommentHandler(BaseHandler):
                 had_new_calls = True
 
                 # Execute
+                logger.info(
+                    "Round %d: executing %s(%s)",
+                    round_num, tool_name,
+                    abbreviate(json.dumps(tool_args), 80),
+                )
                 await status.update_phase(f"Running {tool_name}...")
                 start = time.monotonic()
                 result = await registry.execute(tool_name, tool_args)
@@ -388,8 +402,11 @@ class IssueCommentHandler(BaseHandler):
                     })
                 return calls
 
-        # Prompt mode: parse ```tool blocks
-        text = str(response)
+        # Prompt mode: parse ```tool blocks from content text
+        if hasattr(response, "choices"):
+            text = response.choices[0].message.content or ""
+        else:
+            text = str(response)
         tool_block_re = re.compile(
             r"```tool\s*\n(.*?)\n```", re.DOTALL
         )
