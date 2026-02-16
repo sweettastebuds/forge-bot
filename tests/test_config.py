@@ -30,6 +30,14 @@ def test_settings_with_required_only(monkeypatch: pytest.MonkeyPatch):
 def test_settings_defaults(monkeypatch: pytest.MonkeyPatch):
     for k, v in _required_env().items():
         monkeypatch.setenv(k, v)
+    # Clear optional env vars that may leak from the host environment.
+    for var in (
+        "LLM_BASE_URL", "LLM_MODEL", "LLM_TEMPERATURE", "LLM_MAX_TOKENS",
+        "LLM_TIMEOUT", "LLM_MAX_CONCURRENT", "LLM_CONTEXT_WINDOW",
+        "SANDBOX_ENABLED", "SANDBOX_TIMEOUT", "RAG_ENABLED",
+        "LOG_LEVEL", "BOT_COMMAND_PREFIX",
+    ):
+        monkeypatch.delenv(var, raising=False)
 
     s = Settings()
     assert s.llm_base_url == "https://api.openai.com/v1"
