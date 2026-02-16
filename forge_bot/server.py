@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 
-from forge_bot.clients.forge import ForgeClient
+from forge_bot.api.client import GenericForgeClient
 from forge_bot.clients.llm import LLMClient
 from forge_bot.config import Settings
 from forge_bot.router import dispatch
@@ -38,13 +38,19 @@ async def lifespan(app: FastAPI):
         app.state.settings.llm_model,
     )
 
+    # Initialize API client (YAML-driven generic client)
+    api_client = GenericForgeClient(app.state.settings)
+    app.state.api_client = api_client
+
     # Resolve bot identity via Forge API
-    forge_client = ForgeClient(app.state.settings)
-    app.state.forge_client = forge_client
     try:
-        bot_user = await forge_client.get_self()
-        app.state.bot_username = bot_user.login
-        logger.info("Bot identity resolved: %s (id=%d)", bot_user.login, bot_user.id)
+        bot_user = await api_client.call("get_authenticated_user")
+        app.state.bot_username = bot_user["login"]
+        logger.info(
+            "Bot identity resolved: %s (id=%d)",
+            bot_user["login"],
+            bot_user["id"],
+        )
     except Exception:
         logger.warning(
             "Could not resolve bot identity — self-loop guard disabled. "
@@ -56,39 +62,14 @@ async def lifespan(app: FastAPI):
     llm_client = LLMClient(app.state.settings)
     app.state.llm_client = llm_client
 
-    # Sandbox: pre-pull images in the background (non-blocking)
-    if app.state.settings.sandbox_enabled:
-        try:
-            import docker as docker_lib
-
-            from forge_bot.sandbox.images import ImageRegistry
-
-            registry = ImageRegistry()
-            if app.state.settings.sandbox_images_file:
-                registry.load_override_file(
-                    app.state.settings.sandbox_images_file,
-                )
-            docker_client = docker_lib.from_env()
-            await registry.prepull(
-                docker_client,
-                app.state.settings.sandbox_prepull_images,
-            )
-            docker_client.close()
-            logger.info("Sandbox image pre-pull complete")
-        except Exception:
-            logger.warning(
-                "Sandbox image pre-pull failed (sandbox will pull on demand)",
-                exc_info=True,
-            )
-
     yield
 
     await llm_client.close()
-    await forge_client.close()
+    await api_client.close()
     logger.info("forge-bot shutting down")
 
 
-app = FastAPI(title="forge-bot", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="forge-bot", version="0.2.0", lifespan=lifespan)
 
 
 def _get_header(headers: dict[str, str], *names: str) -> str | None:
@@ -121,7 +102,7 @@ async def process_webhook(
     event_type: str,
     payload: dict[str, Any],
     bot_username: str,
-    forge_client: ForgeClient,
+    api_client: GenericForgeClient,
     llm_client: LLMClient,
     settings: Settings,
 ) -> None:
@@ -138,7 +119,7 @@ async def process_webhook(
             event_type,
             payload,
             bot_username,
-            forge_client=forge_client,
+            api_client=api_client,
             llm_client=llm_client,
             settings=settings,
         )
@@ -214,7 +195,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks) -> Respon
         event_type,
         payload,
         bot_username,
-        request.app.state.forge_client,
+        request.app.state.api_client,
         request.app.state.llm_client,
         settings,
     )

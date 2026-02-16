@@ -13,10 +13,9 @@ from forge_bot.models import (
     IssuesEvent,
     PullRequestEvent,
 )
-from forge_bot.sandbox.parser import parse_run_command
 
 if TYPE_CHECKING:
-    from forge_bot.clients.forge import ForgeClient
+    from forge_bot.api.client import GenericForgeClient
     from forge_bot.clients.llm import LLMClient
     from forge_bot.config import Settings
 
@@ -34,17 +33,11 @@ def _mentions_user(text: str, username: str) -> bool:
     return bool(re.search(pattern, text, re.MULTILINE))
 
 
-def _has_index_command(text: str, prefix: str = "/") -> bool:
-    """Return True if *text* contains a /index command."""
-    pattern = rf"(?:^|\s){re.escape(prefix)}index(?:\s|$)"
-    return bool(re.search(pattern, text, re.MULTILINE))
-
-
 async def dispatch(
     event_type: str,
     payload: dict[str, Any],
     bot_username: str,
-    forge_client: ForgeClient | None = None,
+    api_client: GenericForgeClient | None = None,
     llm_client: LLMClient | None = None,
     settings: Settings | None = None,
 ) -> None:
@@ -74,8 +67,10 @@ async def dispatch(
             event.number,
             event.repository.full_name,
         )
-        if forge_client and llm_client and settings:
-            handler = PullRequestHandler(forge_client, llm_client, settings, bot_username)
+        if api_client and llm_client and settings:
+            handler = PullRequestHandler(
+                api_client, llm_client, settings, bot_username
+            )
             await handler.handle(event)
         return
 
@@ -89,7 +84,9 @@ async def dispatch(
 
         # Only act if the bot is @mentioned in the comment body.
         if not _mentions_user(event.comment.body, bot_username):
-            logger.debug("Comment #%d does not mention bot, skipping", event.comment.id)
+            logger.debug(
+                "Comment #%d does not mention bot, skipping", event.comment.id
+            )
             return
 
         logger.info(
@@ -98,31 +95,11 @@ async def dispatch(
             event.issue.number,
             event.repository.full_name,
         )
-        if forge_client and llm_client and settings:
+        if api_client and llm_client and settings:
             handler = IssueCommentHandler(
-                forge_client, llm_client, settings, bot_username,
+                api_client, llm_client, settings, bot_username
             )
-            # Check for /run command
-            run_cmd = parse_run_command(
-                event.comment.body, settings.bot_command_prefix,
-            )
-            if run_cmd:
-                logger.info(
-                    "Dispatching /run %s on %s#%d",
-                    run_cmd.language,
-                    event.repository.full_name,
-                    event.issue.number,
-                )
-                await handler.handle_run(event, run_cmd)
-            elif _has_index_command(event.comment.body, settings.bot_command_prefix):
-                logger.info(
-                    "Dispatching /index on %s#%d",
-                    event.repository.full_name,
-                    event.issue.number,
-                )
-                await handler.handle_index(event)
-            else:
-                await handler.handle(event)
+            await handler.handle(event)
         return
 
     # --- Issue events (opened, assigned) ---
@@ -137,7 +114,10 @@ async def dispatch(
         if event.action == "assigned":
             assignee_logins = {a.login for a in event.issue.assignees}
             if bot_username not in assignee_logins:
-                logger.debug("Issue #%d not assigned to bot, skipping", event.issue.number)
+                logger.debug(
+                    "Issue #%d not assigned to bot, skipping",
+                    event.issue.number,
+                )
                 return
 
         logger.info(
@@ -146,7 +126,7 @@ async def dispatch(
             event.issue.number,
             event.repository.full_name,
         )
-        # TODO Phase 3: await issue_handler.handle(event)
+        # TODO: await issue_handler.handle(event)
         return
 
     logger.debug("Unhandled event type: %s", event_type)
