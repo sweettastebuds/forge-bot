@@ -1145,15 +1145,29 @@ pytest-httpx>=0.34.0
 
 ---
 
-## 15. Future Roadmap (Post-MVP)
+## 15. Future Roadmap
+
+### 15.1 V2: Tool/Function-Calling System
+
+The V1 `[FETCH:]` marker system is fragile — smaller models frequently forget they can request files. V2 replaces this with a proper tool-calling architecture:
+
+- **Native tool calling** for models that support it (GPT-4o, Llama 3.1, Mistral)
+- **Prompt-based fallback** for models that don't (Gemma3, older Ollama models)
+- **Auto-detection** (`LLM_TOOL_MODE=auto`): try native first, fall back to prompt
+- **Tool registry**: Per-request registry with repo context from webhook events
+- **Planned tools**: `fetch_file`, `get_commit`, `search_code`
+
+See [docs/v2-roadmap.md](v2-roadmap.md) for the full design.
+
+### 15.2 Future Phases (Post-V2)
 
 | Phase | Feature | Description |
 |-------|---------|-------------|
-| **v0.2** | Redis task queue | Replace in-memory asyncio queue with ARQ + Redis for persistence and crash recovery |
-| **v0.2** | Multi-repo webhook registration | API endpoint to register/unregister the bot on repos programmatically |
-| **v0.3** | PR approval workflows | Bot can approve PRs based on configurable criteria (all checks pass, review score threshold) |
-| **v0.3** | Conversation memory | Maintain context across multiple comments in the same issue/PR thread |
-| **v0.4** | Web dashboard | Simple status page: recent reviews, processing queue, error rates |
-| **v0.4** | Per-repo configuration | `.forgebot.yml` file in repo root for custom prompts, review rules, sandbox settings |
-| **v0.5** | Multi-instance support | Single bot serving multiple Gitea/Forgejo instances |
-| **v0.5** | MCP tool integration | Expose bot capabilities as MCP tools for broader agent ecosystems |
+| **v2.1** | Redis task queue | Replace in-memory asyncio queue with ARQ + Redis for persistence and crash recovery |
+| **v2.1** | Multi-repo webhook registration | API endpoint to register/unregister the bot on repos programmatically |
+| **v2.2** | PR approval workflows | Bot can approve PRs based on configurable criteria (all checks pass, review score threshold) |
+| **v2.2** | Conversation memory | Maintain context across multiple comments in the same issue/PR thread |
+| **v2.3** | Web dashboard | Simple status page: recent reviews, processing queue, error rates |
+| **v2.3** | Per-repo configuration | `.forgebot.yml` file in repo root for custom prompts, review rules, sandbox settings |
+| **v3.0** | Multi-instance support | Single bot serving multiple Gitea/Forgejo instances |
+| **v3.0** | MCP tool integration | Expose bot capabilities as MCP tools for broader agent ecosystems |

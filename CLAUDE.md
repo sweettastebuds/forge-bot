@@ -41,6 +41,8 @@ forge_bot/
                         downloads text attachments, runs LLM with fetch-loop
                         (LLM can request files via [FETCH: path] or [FETCH: path@branch],
                         handler fetches and re-prompts, max 2 rounds)
+                        handle_run(): sandbox code execution via /run command
+                        handle_index(): on-demand RAG re-indexing via /index command
     issue_assign.py   — Issue assigned to bot: greeting/triage (not yet implemented)
   clients/
     forge.py      — httpx.AsyncClient wrapper for Gitea/Forgejo API v1
@@ -56,12 +58,14 @@ forge_bot/
     images.py       — Image registry, pre-pull logic, sandbox-images.json loading
     parser.py       — Parse /run commands + code blocks from comment body
   rag/              — Optional (RAG_ENABLED=false by default)
-    pipeline.py, 
-    ingester.py, 
-    chunker.py, 
-    embedder.py, 
-    store.py, 
-    retriever.py
+    chunker.py    — AST-aware chunking (tree-sitter for Python/JS) with
+                    sliding-window fallback for other languages
+    embedder.py   — Dual-backend: local sentence-transformers or remote
+                    OpenAI-compatible /v1/embeddings endpoint
+    store.py      — ChromaDB persistent vector store wrapper
+    ingester.py   — Fetch repo files via Forge API, chunk, embed, store
+    pipeline.py   — Orchestrates lazy-initialized RAG workflow
+    retriever.py  — High-level query interface with context truncation
   utils/
     dedup.py      — LRU OrderedDict (max 10k) tracking X-Gitea-Delivery UUIDs
     diff.py       — Unified diff parser
@@ -98,6 +102,13 @@ forge_bot/
 10. **Dynamic context limits**: `_context_limits(context_window)` derives max_recent_comments, summary_max_tokens, max_tree_entries, max_file_chars, max_grounding_file_chars from LLM_CONTEXT_WINDOW. Small models get fewer comments and smaller context; large models get more.
 11. **Conversation summarization**: When thread exceeds max_recent_comments, older comments are summarized via a dedicated LLM call (conversation_summary.j2, temp=0.1). Summary explicitly filters bot hallucinations. Fallback: naive truncation (first 2 + last comment) on LLM failure.
 12. **Anti-hallucination prompt**: issue_respond.j2 opens with MANDATORY RULES forbidding fabrication of files, commits, or configs. Ground truth data placed at end of prompt for recency attention bias.
+
+## Bot Commands (in Gitea comments)
+
+- `@bot /run <language>` + fenced code block — Execute code in a sandboxed container
+- `@bot /run --net <language>` + code block — Execute with network access enabled
+- `@bot /index` — Re-index the repository for RAG context (requires RAG_ENABLED=true)
+- `@bot <question>` — Ask a question about the codebase (uses repo context + optional RAG)
 
 ## Commands
 

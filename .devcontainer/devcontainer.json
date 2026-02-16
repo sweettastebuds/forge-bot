@@ -41,11 +41,16 @@
 		}
 	},
 	"forwardPorts": [
-		8080
+		8080,
+		11434
 	],
 	"portsAttributes": {
 		"8080": {
 			"label": "forge-bot webhook",
+			"onAutoForward": "silent"
+		},
+		"11434": {
+			"label": "Ollama LLM",
 			"onAutoForward": "silent"
 		}
 	},
@@ -57,7 +62,8 @@
 		"LLM_BASE_URL": "${localEnv:LLM_BASE_URL:https://api.openai.com/v1}",
 		"LLM_MODEL": "${localEnv:LLM_MODEL:gpt-4o}",
 		"LOG_LEVEL": "DEBUG"
-	}
+	},
+	"postStartCommand": "command -v ollama >/dev/null 2>&1 && ollama serve &>/dev/null & echo 'Ollama started' || echo 'Ollama not installed — install with: curl -fsSL https://ollama.com/install.sh | sh'"
 	// "name": "Python 3",
 	// // Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
 	// "image": "mcr.microsoft.com/devcontainers/python:2-3.12-trixie",
