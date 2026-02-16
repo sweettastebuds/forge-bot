@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     forge_instance_url: str = Field(description="Base URL of Gitea/Forgejo instance")
     forge_api_token: str = Field(description="Bot account API token")
     forge_webhook_secret: str = Field(description="HMAC secret for webhook verification")
+    forge_provider: str = Field(
+        default="gitea",
+        description="API provider: 'gitea' or 'forgejo'",
+    )
 
     # --- LLM connection ---
     llm_api_key: str = Field(description="API key for the LLM endpoint")
