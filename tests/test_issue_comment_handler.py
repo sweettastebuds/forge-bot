@@ -1247,6 +1247,27 @@ async def test_prompt_contains_anti_hallucination_rules(
     assert "simulating" in system_prompt
 
 
+async def test_prompt_contains_capabilities_section(
+    mock_llm: AsyncMock,
+    settings: Settings,
+):
+    """The system prompt lists available slash commands."""
+    event = _make_event(comment_body="@forge-bot what can you do?")
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = []
+    mock_forge.get_repo_tree.return_value = []
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    system_prompt = _get_system_prompt(mock_llm)
+    assert "YOUR CAPABILITIES" in system_prompt
+    assert "/run" in system_prompt
+    assert "/index" in system_prompt
+
+
 async def test_summarization_prompt_filters_bot_claims(
     settings: Settings,
 ):
