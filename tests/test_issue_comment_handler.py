@@ -1,6 +1,6 @@
 """Tests for forge_bot.handlers.issue_comment."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -13,9 +13,35 @@ from forge_bot.handlers.issue_comment import (
     _extract_commit_shas,
     _extract_file_paths,
     _get_extension,
-    _parse_fetch_request,
 )
 from forge_bot.models import IssueCommentEvent
+
+# --- Helpers ---
+
+
+def _mock_tool_response(content: str, tool_calls=None):
+    """Build a mock ChatCompletion for chat_with_tools().
+
+    When tool_calls is None/empty, the handler treats it as a final answer.
+    """
+    message = MagicMock()
+    message.content = content
+    message.tool_calls = tool_calls
+    choice = MagicMock()
+    choice.message = message
+    resp = MagicMock()
+    resp.choices = [choice]
+    return resp
+
+
+def _mock_tool_call(name: str, arguments: str, call_id: str = "call_1"):
+    """Build a mock tool_call object (as returned by OpenAI)."""
+    tc = MagicMock()
+    tc.id = call_id
+    tc.function.name = name
+    tc.function.arguments = arguments
+    return tc
+
 
 # --- Fixtures ---
 
@@ -75,7 +101,12 @@ def mock_forge():
 @pytest.fixture
 def mock_llm():
     llm = AsyncMock()
-    llm.chat.return_value = "Here is my explanation of the auth flow."
+    # chat() is still used for conversation summarization.
+    llm.chat.return_value = "Summary of earlier discussion."
+    # chat_with_tools() is used for the main response loop.
+    llm.chat_with_tools.return_value = _mock_tool_response(
+        "Here is my explanation of the auth flow."
+    )
     return llm
 
 
@@ -108,6 +139,18 @@ def _make_event(
     })
 
 
+def _get_system_prompt(mock_llm: AsyncMock) -> str:
+    """Extract the system prompt from the last chat_with_tools call."""
+    messages = mock_llm.chat_with_tools.call_args.args[0]
+    return messages[0]["content"]
+
+
+def _get_user_message(mock_llm: AsyncMock) -> str:
+    """Extract the user message from the last chat_with_tools call."""
+    messages = mock_llm.chat_with_tools.call_args.args[0]
+    return messages[1]["content"]
+
+
 # --- Core handler tests ---
 
 
@@ -121,11 +164,10 @@ async def test_handle_fetches_comments_and_posts_reply(
     await handler.handle(comment_event)
 
     mock_forge.get_issue_comments.assert_awaited_once_with("owner", "repo", 5)
-    mock_llm.chat.assert_awaited_once()
+    mock_llm.chat_with_tools.assert_awaited_once()
 
-    call_args = mock_llm.chat.call_args
-    system_prompt = call_args.args[0]
-    user_message = call_args.args[1]
+    system_prompt = _get_system_prompt(mock_llm)
+    user_message = _get_user_message(mock_llm)
     assert "owner/repo" in system_prompt
     assert "#5" in system_prompt
     assert user_message == "@forge-bot what does this function do?"
@@ -141,7 +183,7 @@ async def test_handle_posts_error_message_on_llm_failure(
     settings: Settings,
 ):
     mock_llm = AsyncMock()
-    mock_llm.chat.side_effect = RuntimeError("LLM is down")
+    mock_llm.chat_with_tools.side_effect = RuntimeError("LLM is down")
 
     handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
     await handler.handle(comment_event)
@@ -183,7 +225,7 @@ async def test_handle_includes_repo_tree_in_prompt(
         "owner", "repo", ref="master"
     )
 
-    system_prompt = mock_llm.chat.call_args.args[0]
+    system_prompt = _get_system_prompt(mock_llm)
     assert "src/main.py" in system_prompt
     assert "README.md" in system_prompt
 
@@ -226,7 +268,7 @@ async def test_handle_gracefully_handles_tree_failure(
     await handler.handle(comment_event)
 
     mock_forge.post_comment.assert_awaited_once()
-    mock_llm.chat.assert_awaited_once()
+    mock_llm.chat_with_tools.assert_awaited_once()
 
 
 # --- Grounding files tests ---
@@ -256,7 +298,7 @@ async def test_handle_fetches_grounding_files_when_no_paths_referenced(
     fetched_paths = [call.args[2] for call in file_content_calls]
     assert "README.md" in fetched_paths
 
-    system_prompt = mock_llm.chat.call_args.args[0]
+    system_prompt = _get_system_prompt(mock_llm)
     assert "My Project" in system_prompt
 
 
@@ -284,7 +326,7 @@ async def test_handle_fetches_referenced_files(
         "owner", "repo", "forge_bot/config.py", ref="main"
     )
 
-    system_prompt = mock_llm.chat.call_args.args[0]
+    system_prompt = _get_system_prompt(mock_llm)
     assert "forge_bot/config.py" in system_prompt
     assert 'SECRET = "hello"' in system_prompt
 
@@ -321,7 +363,7 @@ async def test_handle_fetches_referenced_commits(
     mock_forge.get_commit.assert_awaited_once_with(
         "owner", "repo", "4a5bc21157"
     )
-    system_prompt = mock_llm.chat.call_args.args[0]
+    system_prompt = _get_system_prompt(mock_llm)
     assert "4a5bc21157" in system_prompt
     assert "add user authentication" in system_prompt
 
@@ -346,7 +388,7 @@ async def test_handle_includes_attachments_in_prompt(
     handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
     await handler.handle(event)
 
-    system_prompt = mock_llm.chat.call_args.args[0]
+    system_prompt = _get_system_prompt(mock_llm)
     assert "screenshot.png" in system_prompt
 
 
@@ -369,7 +411,7 @@ async def test_handle_downloads_text_attachments(
     await handler.handle(event)
 
     mock_forge.download_url.assert_awaited_once()
-    system_prompt = mock_llm.chat.call_args.args[0]
+    system_prompt = _get_system_prompt(mock_llm)
     assert "TDD Plan" in system_prompt
 
 
@@ -391,17 +433,17 @@ async def test_handle_survives_attachment_download_failure(
     handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
     await handler.handle(event)
 
-    mock_llm.chat.assert_awaited_once()
+    mock_llm.chat_with_tools.assert_awaited_once()
     mock_forge.post_comment.assert_awaited_once()
 
 
-# --- Fetch loop tests ---
+# --- Tool loop tests ---
 
 
-async def test_fetch_loop_fetches_requested_files(
+async def test_tool_loop_native_fetches_file(
     settings: Settings,
 ):
-    """When LLM responds with [FETCH:], handler fetches and re-prompts."""
+    """In native mode, when LLM returns a tool_call, handler executes it and re-prompts."""
     event = _make_event(comment_body="@forge-bot explain the server")
 
     mock_forge = AsyncMock()
@@ -410,38 +452,208 @@ async def test_fetch_loop_fetches_requested_files(
         {"path": "forge_bot/server.py", "type": "blob", "size": 200},
         {"path": "README.md", "type": "blob", "size": 50},
     ]
-    mock_forge.get_file_content.return_value = "# server code"
+    mock_forge.get_file_content.return_value = "# server code\napp = FastAPI()"
     mock_forge.post_comment.return_value = {"id": 10}
 
+    # First call: LLM requests fetch_file tool.
+    tc = _mock_tool_call(
+        "fetch_file", '{"path": "forge_bot/server.py"}', "call_1",
+    )
+    resp1 = _mock_tool_response(None, tool_calls=[tc])
+    resp1.choices[0].message.model_dump.return_value = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "function": {
+                    "name": "fetch_file",
+                    "arguments": '{"path": "forge_bot/server.py"}',
+                },
+            },
+        ],
+    }
+    # Second call: LLM gives final answer.
+    resp2 = _mock_tool_response(
+        "The server uses FastAPI to handle webhooks."
+    )
+
     mock_llm = AsyncMock()
-    # First call: LLM requests a file.
-    # Second call: LLM gives a real answer.
-    mock_llm.chat.side_effect = [
-        "[FETCH: forge_bot/server.py]",
-        "The server uses FastAPI to handle webhooks.",
-    ]
+    mock_llm.chat_with_tools.side_effect = [resp1, resp2]
 
     handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
     await handler.handle(event)
 
     # LLM should have been called twice.
-    assert mock_llm.chat.await_count == 2
+    assert mock_llm.chat_with_tools.await_count == 2
 
-    # The second call's system prompt should contain the fetched file.
-    second_call_prompt = mock_llm.chat.call_args_list[1].args[0]
-    assert "forge_bot/server.py" in second_call_prompt
-    assert "server code" in second_call_prompt
-
-    # Posted reply should be the clean final answer.
+    # Posted reply should be the final answer.
     posted_body = mock_forge.post_comment.call_args.args[3]
     assert "FastAPI" in posted_body
-    assert "[FETCH:" not in posted_body
 
 
-async def test_fetch_loop_with_branch_specifier(
+async def test_tool_loop_prompt_mode(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """In prompt mode, handler parses ```tool blocks and executes tools."""
+    monkeypatch.setenv("LLM_TOOL_MODE", "prompt")
+    prompt_settings = Settings()
+    event = _make_event(comment_body="@forge-bot explain the config")
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = []
+    mock_forge.get_repo_tree.return_value = [
+        {"path": "config.py", "type": "blob", "size": 100},
+    ]
+    mock_forge.get_file_content.return_value = "KEY = 'value'"
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    # First call: LLM returns a tool block.
+    resp1 = _mock_tool_response(
+        'I need to read the config.\n```tool\n'
+        '{"name": "fetch_file", "arguments": {"path": "config.py"}}\n```'
+    )
+    # Second call: LLM gives final answer.
+    resp2 = _mock_tool_response("The config defines KEY = 'value'.")
+
+    mock_llm = AsyncMock()
+    mock_llm.chat_with_tools.side_effect = [resp1, resp2]
+
+    handler = IssueCommentHandler(
+        mock_forge, mock_llm, prompt_settings, "forge-bot",
+    )
+    await handler.handle(event)
+
+    assert mock_llm.chat_with_tools.await_count == 2
+
+    # First call should have tool_descriptions in the system prompt.
+    first_messages = mock_llm.chat_with_tools.call_args_list[0].args[0]
+    system_prompt = first_messages[0]["content"]
+    assert "AVAILABLE TOOLS" in system_prompt
+    assert "fetch_file" in system_prompt
+
+    # First call should NOT have tools kwarg (prompt mode).
+    first_kwargs = mock_llm.chat_with_tools.call_args_list[0].kwargs
+    assert "tools" not in first_kwargs
+
+    posted_body = mock_forge.post_comment.call_args.args[3]
+    assert "KEY" in posted_body
+
+
+async def test_tool_loop_auto_fallback(
     settings: Settings,
 ):
-    """[FETCH: file@branch] fetches from the specified branch."""
+    """Auto mode: if native call fails, falls back to prompt mode."""
+    event = _make_event(comment_body="@forge-bot hello")
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = []
+    mock_forge.get_repo_tree.return_value = []
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    mock_llm = AsyncMock()
+    # First call (native): fails with API error.
+    # Second call (prompt fallback): succeeds.
+    mock_llm.chat_with_tools.side_effect = [
+        RuntimeError("tools parameter not supported"),
+        _mock_tool_response("Here's my answer via prompt mode."),
+    ]
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    # Should have been called twice (native fail + prompt success).
+    assert mock_llm.chat_with_tools.await_count == 2
+
+    # Second call should NOT have tools kwarg (prompt fallback).
+    second_kwargs = mock_llm.chat_with_tools.call_args_list[1].kwargs
+    assert "tools" not in second_kwargs
+
+    posted_body = mock_forge.post_comment.call_args.args[3]
+    assert "prompt mode" in posted_body
+
+
+async def test_tool_loop_max_rounds(
+    settings: Settings,
+):
+    """The tool loop stops after _MAX_TOOL_ROUNDS."""
+    event = _make_event(comment_body="@forge-bot investigate")
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = []
+    mock_forge.get_repo_tree.return_value = [
+        {"path": f"{c}.py", "type": "blob", "size": 10}
+        for c in "abcdef"
+    ]
+    mock_forge.get_file_content.return_value = "code"
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    def _make_fetch_response(path: str, call_id: str):
+        tc = _mock_tool_call("fetch_file", f'{{"path": "{path}"}}', call_id)
+        resp = _mock_tool_response(None, tool_calls=[tc])
+        resp.choices[0].message.model_dump.return_value = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": call_id,
+                "function": {
+                    "name": "fetch_file",
+                    "arguments": f'{{"path": "{path}"}}',
+                },
+            }],
+        }
+        return resp
+
+    mock_llm = AsyncMock()
+    # Every call requests more files — should stop after MAX_TOOL_ROUNDS (5).
+    mock_llm.chat_with_tools.side_effect = [
+        _make_fetch_response("a.py", "c1"),
+        _make_fetch_response("b.py", "c2"),
+        _make_fetch_response("c.py", "c3"),
+        _make_fetch_response("d.py", "c4"),
+        _make_fetch_response("e.py", "c5"),
+    ]
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    # Max rounds is 5, so should have 5 chat_with_tools calls.
+    assert mock_llm.chat_with_tools.await_count == 5
+
+    # Final reply should be the fallback message.
+    posted_body = mock_forge.post_comment.call_args.args[3]
+    assert "wasn't able to form" in posted_body
+
+
+async def test_tool_loop_cleans_markers(
+    settings: Settings,
+):
+    """Stray [FETCH:] and ```tool markers are cleaned from final reply."""
+    event = _make_event(comment_body="@forge-bot help")
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = []
+    mock_forge.get_repo_tree.return_value = []
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    mock_llm = AsyncMock()
+    mock_llm.chat_with_tools.return_value = _mock_tool_response(
+        "Here's the answer.\n[FETCH: nonexistent.py]\nMore text."
+    )
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    posted_body = mock_forge.post_comment.call_args.args[3]
+    assert "[FETCH:" not in posted_body
+    assert "Here's the answer." in posted_body
+
+
+async def test_tool_loop_fetch_file_with_ref(
+    settings: Settings,
+):
+    """FetchFileTool correctly passes ref parameter."""
     event = _make_event(comment_body="@forge-bot compare configs")
 
     mock_forge = AsyncMock()
@@ -452,18 +664,33 @@ async def test_fetch_loop_with_branch_specifier(
     mock_forge.get_file_content.return_value = "key: value"
     mock_forge.post_comment.return_value = {"id": 10}
 
+    tc = _mock_tool_call(
+        "fetch_file",
+        '{"path": "config.yaml", "ref": "develop"}',
+        "call_1",
+    )
+    resp1 = _mock_tool_response(None, tool_calls=[tc])
+    resp1.choices[0].message.model_dump.return_value = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": "call_1",
+            "function": {
+                "name": "fetch_file",
+                "arguments": '{"path": "config.yaml", "ref": "develop"}',
+            },
+        }],
+    }
+    resp2 = _mock_tool_response("The config differs on develop.")
+
     mock_llm = AsyncMock()
-    mock_llm.chat.side_effect = [
-        "[FETCH: config.yaml@develop]",
-        "The config differs on the develop branch.",
-    ]
+    mock_llm.chat_with_tools.side_effect = [resp1, resp2]
 
     handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
     await handler.handle(event)
 
     # Should have fetched with ref="develop"
     file_content_calls = mock_forge.get_file_content.call_args_list
-    # Find the call for config.yaml (may be after grounding file calls)
     fetch_call = [
         c for c in file_content_calls
         if c.args[2] == "config.yaml" and c.kwargs.get("ref") == "develop"
@@ -471,64 +698,50 @@ async def test_fetch_loop_with_branch_specifier(
     assert len(fetch_call) == 1
 
 
-async def test_fetch_loop_max_rounds_enforced(
+async def test_tool_loop_search_code(
     settings: Settings,
 ):
-    """The fetch loop stops after _MAX_FETCH_ROUNDS."""
-    event = _make_event(comment_body="@forge-bot investigate")
+    """SearchCodeTool is invoked and results are used."""
+    event = _make_event(comment_body="@forge-bot where is auth defined?")
 
     mock_forge = AsyncMock()
     mock_forge.get_issue_comments.return_value = []
     mock_forge.get_repo_tree.return_value = [
-        {"path": "a.py", "type": "blob", "size": 10},
-        {"path": "b.py", "type": "blob", "size": 10},
-        {"path": "c.py", "type": "blob", "size": 10},
+        {"path": "src/auth.py", "type": "blob", "size": 100},
+        {"path": "src/main.py", "type": "blob", "size": 100},
     ]
-    mock_forge.get_file_content.return_value = "code"
+    mock_forge.get_file_content.return_value = "def authenticate(): pass"
     mock_forge.post_comment.return_value = {"id": 10}
 
-    mock_llm = AsyncMock()
-    # Every call requests more files — should stop after max rounds.
-    mock_llm.chat.side_effect = [
-        "[FETCH: a.py]",
-        "[FETCH: b.py]",
-        "[FETCH: c.py]",  # This shouldn't trigger a 4th call.
-    ]
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    # MAX_FETCH_ROUNDS is 2, so total calls = 3 (initial + 2 rounds).
-    assert mock_llm.chat.await_count == 3
-
-    # Final reply should be cleaned — no [FETCH:] markers.
-    posted_body = mock_forge.post_comment.call_args.args[3]
-    assert "[FETCH:" not in posted_body
-    assert "wasn't able to form" in posted_body
-
-
-async def test_fetch_loop_strips_markers_from_final_reply(
-    settings: Settings,
-):
-    """[FETCH:] markers are stripped from the final posted reply."""
-    event = _make_event(comment_body="@forge-bot help")
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.return_value = []
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    mock_llm = AsyncMock()
-    mock_llm.chat.return_value = (
-        "Here's the answer.\n[FETCH: nonexistent.py]\nMore text."
+    tc = _mock_tool_call(
+        "search_code",
+        '{"query": "authenticate"}',
+        "call_1",
+    )
+    resp1 = _mock_tool_response(None, tool_calls=[tc])
+    resp1.choices[0].message.model_dump.return_value = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": "call_1",
+            "function": {
+                "name": "search_code",
+                "arguments": '{"query": "authenticate"}',
+            },
+        }],
+    }
+    resp2 = _mock_tool_response(
+        "The authenticate function is defined in src/auth.py."
     )
 
+    mock_llm = AsyncMock()
+    mock_llm.chat_with_tools.side_effect = [resp1, resp2]
+
     handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
     await handler.handle(event)
 
     posted_body = mock_forge.post_comment.call_args.args[3]
-    assert "[FETCH:" not in posted_body
-    assert "Here's the answer." in posted_body
+    assert "authenticate" in posted_body
 
 
 # --- Unit tests for helper functions ---
@@ -610,30 +823,6 @@ def test_get_extension():
     assert _get_extension("file.py?v=2") == ".py"
 
 
-def test_parse_fetch_request_simple():
-    path, ref = _parse_fetch_request("src/main.py")
-    assert path == "src/main.py"
-    assert ref == ""
-
-
-def test_parse_fetch_request_with_branch():
-    path, ref = _parse_fetch_request("src/main.py@develop")
-    assert path == "src/main.py"
-    assert ref == "develop"
-
-
-def test_parse_fetch_request_with_sha():
-    path, ref = _parse_fetch_request("config.yaml@abc123f")
-    assert path == "config.yaml"
-    assert ref == "abc123f"
-
-
-def test_parse_fetch_request_strips_whitespace():
-    path, ref = _parse_fetch_request("  src/main.py @ develop  ")
-    assert path == "src/main.py"
-    assert ref == "develop"
-
-
 # --- Context limits tests ---
 
 
@@ -688,9 +877,11 @@ async def test_short_conversation_no_summarization(
     handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
     await handler.handle(event)
 
-    # LLM.chat should be called exactly once (no summarization call).
-    assert mock_llm.chat.await_count == 1
-    system_prompt = mock_llm.chat.call_args.args[0]
+    # chat() should NOT be called (no summarization needed).
+    mock_llm.chat.assert_not_awaited()
+    # chat_with_tools() called once (main response).
+    assert mock_llm.chat_with_tools.await_count == 1
+    system_prompt = _get_system_prompt(mock_llm)
     assert "EARLIER CONVERSATION" not in system_prompt
 
 
@@ -714,24 +905,30 @@ async def test_long_conversation_triggers_summarization(
     mock_forge.post_comment.return_value = {"id": 10}
 
     mock_llm = AsyncMock()
-    mock_llm.chat.side_effect = [
-        "The conversation covered project setup and configuration.",
-        "Here is my response based on the context.",
-    ]
+    # chat() for summarization:
+    mock_llm.chat.return_value = (
+        "The conversation covered project setup and configuration."
+    )
+    # chat_with_tools() for main response:
+    mock_llm.chat_with_tools.return_value = _mock_tool_response(
+        "Here is my response based on the context."
+    )
 
     handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
     await handler.handle(event)
 
-    # LLM.chat called twice: once for summarization, once for response.
-    assert mock_llm.chat.await_count == 2
+    # chat() called once for summarization.
+    mock_llm.chat.assert_awaited_once()
+    # chat_with_tools() called once for main response.
+    mock_llm.chat_with_tools.assert_awaited_once()
 
-    # First call: summarization.
-    summary_system = mock_llm.chat.call_args_list[0].args[0]
+    # Summarization call.
+    summary_system = mock_llm.chat.call_args.args[0]
     assert "CONVERSATION TO SUMMARIZE" in summary_system
     assert "forge-bot" in summary_system
 
-    # Second call: main response includes summary.
-    main_system = mock_llm.chat.call_args_list[1].args[0]
+    # Main response includes summary.
+    main_system = _get_system_prompt(mock_llm)
     assert "EARLIER CONVERSATION" in main_system
     assert "project setup and configuration" in main_system
 
@@ -756,10 +953,12 @@ async def test_summarization_failure_falls_back(
     mock_forge.post_comment.return_value = {"id": 10}
 
     mock_llm = AsyncMock()
-    mock_llm.chat.side_effect = [
-        RuntimeError("LLM is down"),
-        "Here is my response.",
-    ]
+    # chat() for summarization fails:
+    mock_llm.chat.side_effect = RuntimeError("LLM is down")
+    # chat_with_tools() for main response succeeds:
+    mock_llm.chat_with_tools.return_value = _mock_tool_response(
+        "Here is my response."
+    )
 
     handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
     await handler.handle(event)
@@ -767,7 +966,7 @@ async def test_summarization_failure_falls_back(
     # Should still post a reply (fell back on truncation summary).
     mock_forge.post_comment.assert_awaited_once()
     # The main call should have a fallback summary in it.
-    main_system = mock_llm.chat.call_args_list[1].args[0]
+    main_system = _get_system_prompt(mock_llm)
     assert "EARLIER CONVERSATION" in main_system
 
 
@@ -800,7 +999,7 @@ async def test_prompt_structure_ground_truth_after_conversation(
     handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
     await handler.handle(event)
 
-    system_prompt = mock_llm.chat.call_args.args[0]
+    system_prompt = _get_system_prompt(mock_llm)
 
     # Verify ordering: conversation before ground truth sections.
     conv_pos = system_prompt.index("=== RECENT CONVERSATION ===")
@@ -826,7 +1025,7 @@ async def test_prompt_contains_anti_hallucination_rules(
     handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
     await handler.handle(event)
 
-    system_prompt = mock_llm.chat.call_args.args[0]
+    system_prompt = _get_system_prompt(mock_llm)
     assert "MANDATORY RULES" in system_prompt
     assert "do NOT guess" in system_prompt
     assert "NEVER" in system_prompt
@@ -853,15 +1052,15 @@ async def test_summarization_prompt_filters_bot_claims(
     mock_forge.post_comment.return_value = {"id": 10}
 
     mock_llm = AsyncMock()
-    mock_llm.chat.side_effect = [
-        "Users discussed configuration changes.",
-        "Here is my response.",
-    ]
+    mock_llm.chat.return_value = "Users discussed configuration changes."
+    mock_llm.chat_with_tools.return_value = _mock_tool_response(
+        "Here is my response."
+    )
 
     handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
     await handler.handle(event)
 
     # The summarization call's system prompt should mention hallucination risk.
-    summary_system = mock_llm.chat.call_args_list[0].args[0]
+    summary_system = mock_llm.chat.call_args.args[0]
     assert "hallucinated" in summary_system.lower()
     assert "forge-bot" in summary_system

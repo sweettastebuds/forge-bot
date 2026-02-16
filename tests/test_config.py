@@ -81,3 +81,22 @@ def test_settings_missing_required_raises(monkeypatch: pytest.MonkeyPatch):
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+def test_settings_tool_mode_default(monkeypatch: pytest.MonkeyPatch):
+    for k, v in _required_env().items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("LLM_TOOL_MODE", raising=False)
+
+    s = Settings()
+    assert s.llm_tool_mode == "auto"
+
+
+def test_settings_tool_mode_override(monkeypatch: pytest.MonkeyPatch):
+    env = _required_env()
+    env["LLM_TOOL_MODE"] = "prompt"
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    s = Settings()
+    assert s.llm_tool_mode == "prompt"
