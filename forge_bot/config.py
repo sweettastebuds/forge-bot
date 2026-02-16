@@ -27,6 +27,10 @@ class Settings(BaseSettings):
         description="Model context window in tokens"
         " — controls conversation trimming and context budgets",
     )
+    llm_tool_mode: str = Field(
+        default="auto",
+        description="Tool calling strategy: 'native', 'prompt', or 'auto'",
+    )
 
     # --- Sandbox ---
     sandbox_enabled: bool = Field(default=True)

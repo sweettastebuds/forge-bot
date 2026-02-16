@@ -28,12 +28,16 @@ You are responding to a conversation on issue #{{ issue_number }}: "{{ issue_tit
 ```
 {{ repo_tree }}
 ```
+{% if tool_descriptions %}
 
-If you need to read a file to answer accurately, respond ONLY with lines like:
-[FETCH: path/to/file.py]
-To fetch from a specific branch or commit:
-[FETCH: path/to/file.py@branch-name]
-I will fetch the contents and re-ask you. Do not guess file contents.
+=== AVAILABLE TOOLS ===
+{{ tool_descriptions }}
+
+IMPORTANT: If you need information not shown below, USE a tool to retrieve it.
+Do not guess file contents — use fetch_file to read the actual file.
+{% else %}
+The following files exist in the repository. You cannot read their contents unless they appear in the FILE CONTENTS section below.
+{% endif %}
 {% endif %}
 {% if file_context %}
 === FILE CONTENTS (real data — use ONLY these contents) ===
