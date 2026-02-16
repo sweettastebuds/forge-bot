@@ -69,9 +69,10 @@ def test_prompt_text():
     registry.register(_EchoTool())
     text = registry.prompt_text()
     assert "echo" in text
-    assert "tool_name" in text
+    assert "fetch_file" in text  # concrete example
     assert '```tool' in text
     assert "arguments" in text
+    assert "RULES:" in text
 
 
 async def test_execute_success():

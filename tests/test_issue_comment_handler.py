@@ -13,6 +13,7 @@ from forge_bot.handlers.issue_comment import (
     _extract_commit_shas,
     _extract_file_paths,
     _get_extension,
+    _models_without_tool_support,
 )
 from forge_bot.models import IssueCommentEvent
 
@@ -44,6 +45,14 @@ def _mock_tool_call(name: str, arguments: str, call_id: str = "call_1"):
 
 
 # --- Fixtures ---
+
+
+@pytest.fixture(autouse=True)
+def _clear_tool_support_cache():
+    """Ensure module-level tool-support cache is clean for each test."""
+    _models_without_tool_support.clear()
+    yield
+    _models_without_tool_support.clear()
 
 
 @pytest.fixture
@@ -437,6 +446,70 @@ async def test_handle_survives_attachment_download_failure(
     mock_forge.post_comment.assert_awaited_once()
 
 
+async def test_handle_truncates_long_bot_comments(
+    mock_llm: AsyncMock,
+    settings: Settings,
+):
+    """Long bot responses in history should be truncated to save context."""
+    event = _make_event(comment_body="@forge-bot follow up question")
+    long_bot_reply = "x" * 2000  # Way over _MAX_BOT_COMMENT_CHARS (500)
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = [
+        {
+            "id": 1,
+            "body": "First question",
+            "user": {"login": "developer"},
+            "created_at": "2026-01-01T00:00:00Z",
+        },
+        {
+            "id": 2,
+            "body": long_bot_reply,
+            "user": {"login": "forge-bot"},
+            "created_at": "2026-01-01T00:01:00Z",
+        },
+    ]
+    mock_forge.get_repo_tree.return_value = []
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    system_prompt = _get_system_prompt(mock_llm)
+    # The full 2000-char bot response should NOT appear.
+    assert long_bot_reply not in system_prompt
+    # The truncation marker should be present.
+    assert "(response truncated)" in system_prompt
+
+
+async def test_handle_preserves_short_bot_comments(
+    mock_llm: AsyncMock,
+    settings: Settings,
+):
+    """Short bot responses should NOT be truncated."""
+    event = _make_event(comment_body="@forge-bot follow up")
+    short_bot_reply = "Here is my short answer."
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = [
+        {
+            "id": 1,
+            "body": short_bot_reply,
+            "user": {"login": "forge-bot"},
+            "created_at": "2026-01-01T00:00:00Z",
+        },
+    ]
+    mock_forge.get_repo_tree.return_value = []
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    system_prompt = _get_system_prompt(mock_llm)
+    assert short_bot_reply in system_prompt
+    assert "(response truncated)" not in system_prompt
+
+
 # --- Tool loop tests ---
 
 
@@ -572,6 +645,35 @@ async def test_tool_loop_auto_fallback(
 
     posted_body = mock_forge.post_comment.call_args.args[3]
     assert "prompt mode" in posted_body
+
+
+async def test_tool_loop_auto_caches_unsupported_model(
+    settings: Settings,
+):
+    """After auto-fallback, the model is remembered so native isn't retried."""
+    event = _make_event(comment_body="@forge-bot hello")
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = []
+    mock_forge.get_repo_tree.return_value = []
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    mock_llm = AsyncMock()
+    # First request: native fails, triggers fallback + caching.
+    mock_llm.chat_with_tools.side_effect = [
+        RuntimeError("tools parameter not supported"),
+        _mock_tool_response("First answer."),
+    ]
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+    assert settings.llm_model in _models_without_tool_support
+
+    # Second request: should go straight to prompt mode (1 call, not 2).
+    mock_llm.reset_mock()
+    mock_llm.chat_with_tools.return_value = _mock_tool_response("Second answer.")
+    await handler.handle(event)
+    assert mock_llm.chat_with_tools.await_count == 1
 
 
 async def test_tool_loop_max_rounds(

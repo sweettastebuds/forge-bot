@@ -34,19 +34,36 @@ class ToolRegistry:
     def prompt_text(self) -> str:
         """Return a formatted block for prompt-based tool calling.
 
-        Includes tool descriptions and a usage example showing the
-        expected JSON format.
+        Includes tool descriptions and a concrete usage example showing the
+        expected JSON format.  The instructions are explicit so that smaller
+        models can reliably follow the format.
         """
         lines = ["You have access to the following tools:\n"]
         for tool in self._tools.values():
             lines.append(tool.to_prompt_text())
         lines.append(
-            '\nTo use a tool, respond with a JSON block:\n'
-            '```tool\n'
-            '{"name": "tool_name", "arguments": {"param": "value"}}\n'
-            '```\n'
-            "You may use multiple tool blocks in a single response.\n"
-            "After tools execute, you will receive results and can respond."
+            "\nTo use a tool, you MUST respond with a fenced code block "
+            "whose language tag is exactly `tool` (not json, not python — "
+            "just `tool`). Inside the block, write a single JSON object with "
+            '"name" and "arguments" keys.\n'
+            "\n"
+            "EXAMPLE — reading a file:\n"
+            "```tool\n"
+            '{"name": "fetch_file", "arguments": {"path": "src/main.py"}}\n'
+            "```\n"
+            "\n"
+            "EXAMPLE — searching code:\n"
+            "```tool\n"
+            '{"name": "search_code", "arguments": {"query": "def handle"}}\n'
+            "```\n"
+            "\n"
+            "RULES:\n"
+            "- You may include multiple ```tool blocks in one response.\n"
+            "- After you use a tool, you will receive the results and can "
+            "then answer the user's question.\n"
+            "- Only use a tool when you need information you don't already "
+            "have.\n"
+            "- Do NOT wrap tool blocks inside other code blocks or markdown."
         )
         return "\n".join(lines)
 

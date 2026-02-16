@@ -14,6 +14,11 @@ from forge_bot.sandbox.parser import RunCommand
 
 logger = logging.getLogger("forge_bot.handlers.issue_comment")
 
+# Models that have been observed to NOT support native tool calling.
+# Populated at runtime by auto-fallback so we avoid repeating the failed
+# native attempt on every subsequent request for the same model.
+_models_without_tool_support: set[str] = set()
+
 # --- Fixed limits (not model-dependent) ---
 _MAX_FILE_FETCHES = 5
 _MAX_GROUNDING_FILES = 3
@@ -21,6 +26,7 @@ _MAX_COMMIT_FETCHES = 3
 _MAX_ATTACHMENT_DOWNLOADS = 3
 _MAX_ATTACHMENT_CONTENT_CHARS = 6_000
 _MAX_TOOL_ROUNDS = 5
+_MAX_BOT_COMMENT_CHARS = 500
 
 
 def _context_limits(context_window: int) -> dict[str, int]:
@@ -298,6 +304,18 @@ class IssueCommentHandler(BaseHandler):
             for c in raw_comments
         ]
 
+        # Truncate bot's own comments to avoid long hallucinated responses
+        # from dominating the context window on subsequent requests.
+        for comment in thread_comments:
+            if (
+                comment["user"] == self.bot_username
+                and len(comment["body"]) > _MAX_BOT_COMMENT_CHARS
+            ):
+                comment["body"] = (
+                    comment["body"][:_MAX_BOT_COMMENT_CHARS]
+                    + "\n\n*(response truncated)*"
+                )
+
         # --- Conversation trimming: summarize old comments ---
         conversation_summary: str | None = None
         recent_comments = thread_comments
@@ -450,6 +468,15 @@ class IssueCommentHandler(BaseHandler):
         tool_mode = self.settings.llm_tool_mode
         use_native = tool_mode in ("native", "auto")
 
+        # Skip native if we already know this model doesn't support tools.
+        model_name = self.settings.llm_model
+        if use_native and model_name in _models_without_tool_support:
+            logger.debug(
+                "Skipping native tool calling for model %s (cached)",
+                model_name,
+            )
+            use_native = False
+
         # For prompt mode, inject tool descriptions into the system prompt.
         tool_descriptions = "" if use_native else registry.prompt_text()
 
@@ -499,6 +526,7 @@ class IssueCommentHandler(BaseHandler):
                         exc_info=True,
                     )
                     use_native = False
+                    _models_without_tool_support.add(model_name)
                     tool_descriptions = registry.prompt_text()
                     system_prompt = self._build_system_prompt(
                         event=event,

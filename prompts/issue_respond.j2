@@ -35,6 +35,7 @@ You are responding to a conversation on issue #{{ issue_number }}: "{{ issue_tit
 
 IMPORTANT: If you need information not shown below, USE a tool to retrieve it.
 Do not guess file contents — use fetch_file to read the actual file.
+When you use a tool, put ONLY the tool block in your response — do not answer the question in the same response. Wait for the tool results first, then answer.
 {% else %}
 The following files exist in the repository. You cannot read their contents unless they appear in the FILE CONTENTS section below.
 {% endif %}
