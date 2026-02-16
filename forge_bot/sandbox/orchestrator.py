@@ -125,9 +125,7 @@ class SandboxOrchestrator:
                 container.logs, stdout=False, stderr=True,
             )
 
-            # Check for OOM
-            inspect = await asyncio.to_thread(container.attrs.get, "State", {})
-            # Refresh attrs to get latest state
+            # Check for OOM — refresh container state to get latest attrs
             await asyncio.to_thread(container.reload)
             oom_killed = container.attrs.get("State", {}).get("OOMKilled", False)
 

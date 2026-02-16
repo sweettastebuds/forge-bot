@@ -1,6 +1,6 @@
 """Tests for forge_bot.sandbox.parser."""
 
-from forge_bot.sandbox.parser import RunCommand, parse_run_command
+from forge_bot.sandbox.parser import parse_run_command
 
 
 def test_parse_run_python():

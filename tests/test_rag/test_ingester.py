@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from forge_bot.rag.chunker import Chunker, CodeChunk
+from forge_bot.rag.chunker import Chunker
 from forge_bot.rag.ingester import Ingester, _should_skip_path
 
 

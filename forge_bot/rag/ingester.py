@@ -35,11 +35,7 @@ def _should_skip_path(path: str) -> bool:
 
     # Check extension (including compound extensions like .min.js)
     filename = parts[-1].lower()
-    for ext in _SKIP_EXTENSIONS:
-        if filename.endswith(ext):
-            return True
-
-    return False
+    return any(filename.endswith(ext) for ext in _SKIP_EXTENSIONS)
 
 
 class Ingester:

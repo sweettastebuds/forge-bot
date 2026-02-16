@@ -8,7 +8,7 @@ import pytest
 
 from forge_bot.config import Settings
 from forge_bot.sandbox.images import ImageRegistry
-from forge_bot.sandbox.orchestrator import ExecutionResult, SandboxOrchestrator
+from forge_bot.sandbox.orchestrator import SandboxOrchestrator
 from forge_bot.sandbox.parser import RunCommand
 
 
