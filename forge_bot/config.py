@@ -32,18 +32,18 @@ class Settings(BaseSettings):
         " — controls conversation trimming and context budgets",
     )
 
-    # --- Sandbox ---
+    # --- Container / Sandbox ---
     sandbox_enabled: bool = Field(default=True)
     sandbox_timeout: int = Field(default=60, description="Max execution time in seconds")
     sandbox_memory: str = Field(default="512m")
     sandbox_cpus: float = Field(default=1.0)
-    sandbox_prepull_images: str = Field(
-        default="python,node",
-        description="Comma-separated image keys to pre-pull, or 'all'/'none'",
+    container_workspace_image: str = Field(
+        default="forge-bot-workspace:latest",
+        description="Docker image for per-event workspace containers",
     )
-    sandbox_images_file: str = Field(
-        default="",
-        description="Path to custom sandbox-images.json override",
+    container_network_enabled: bool = Field(
+        default=True,
+        description="Allow network access in workspace containers",
     )
 
     # --- RAG (optional) ---
