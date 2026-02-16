@@ -1,11 +1,15 @@
 """Handler for issue_comment webhook events (@mention replies)."""
 
+from __future__ import annotations
+
 import logging
 import re
 from typing import Any
 
 from forge_bot.handlers.base import BaseHandler
 from forge_bot.models import IssueCommentEvent
+from forge_bot.sandbox.orchestrator import ExecutionResult
+from forge_bot.sandbox.parser import RunCommand
 
 logger = logging.getLogger("forge_bot.handlers.issue_comment")
 
@@ -118,8 +122,120 @@ def _parse_fetch_request(raw: str) -> tuple[str, str]:
     return raw, ""
 
 
+_MAX_OUTPUT_CHARS = 8_000
+
+
 class IssueCommentHandler(BaseHandler):
     """Respond to @mentions in issue/PR comments with LLM-generated answers."""
+
+    # --- Sandbox /run handling ---
+
+    async def handle_run(
+        self, event: IssueCommentEvent, command: RunCommand,
+    ) -> None:
+        """Execute code in a sandbox and post results."""
+        from forge_bot.sandbox.images import ImageRegistry
+        from forge_bot.sandbox.orchestrator import SandboxOrchestrator
+
+        owner, repo = event.repository.full_name.split("/", 1)
+        issue_num = event.issue.number
+
+        if not self.settings.sandbox_enabled:
+            await self.forge.post_comment(
+                owner, repo, issue_num,
+                "Sandbox execution is disabled on this instance.",
+            )
+            return
+
+        registry = ImageRegistry()
+        if self.settings.sandbox_images_file:
+            registry.load_override_file(self.settings.sandbox_images_file)
+
+        image = registry.resolve(command.language)
+        if image is None:
+            available = ", ".join(registry.available_languages())
+            await self.forge.post_comment(
+                owner, repo, issue_num,
+                f"Unknown language `{command.language}`. "
+                f"Supported languages: {available}",
+            )
+            return
+
+        orchestrator = SandboxOrchestrator(self.settings, registry)
+        try:
+            await orchestrator.connect()
+            result = await orchestrator.execute(command)
+        except Exception as exc:
+            logger.exception(
+                "Sandbox execution failed for %s#%d",
+                event.repository.full_name, issue_num,
+            )
+            await self.forge.post_comment(
+                owner, repo, issue_num,
+                f"Sandbox error: `{exc}`",
+            )
+            return
+        finally:
+            await orchestrator.close()
+
+        reply = self._format_execution_result(result, command)
+        try:
+            await self.forge.post_comment(owner, repo, issue_num, reply)
+            logger.info(
+                "Posted sandbox result on %s#%d (exit=%d)",
+                event.repository.full_name, issue_num, result.exit_code,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to post sandbox result on %s#%d",
+                event.repository.full_name, issue_num,
+            )
+
+    @staticmethod
+    def _format_execution_result(
+        result: ExecutionResult, command: RunCommand,
+    ) -> str:
+        """Format an ExecutionResult as a markdown comment."""
+        lines: list[str] = []
+
+        if result.oom_killed:
+            lines.append(
+                "**Out of Memory** — the program exceeded the memory limit "
+                "and was killed.",
+            )
+        elif result.exit_code != 0:
+            lines.append(f"**Exit code {result.exit_code}**")
+        else:
+            lines.append("**Execution succeeded**")
+
+        # stdout
+        stdout = result.stdout.strip()
+        if stdout:
+            if len(stdout) > _MAX_OUTPUT_CHARS:
+                stdout = stdout[:_MAX_OUTPUT_CHARS] + "\n... (truncated)"
+            lines.append(f"\n**stdout**\n```\n{stdout}\n```")
+
+        # stderr
+        stderr = result.stderr.strip()
+        if stderr:
+            if len(stderr) > _MAX_OUTPUT_CHARS:
+                stderr = stderr[:_MAX_OUTPUT_CHARS] + "\n... (truncated)"
+            lines.append(f"\n**stderr**\n```\n{stderr}\n```")
+
+        if not stdout and not stderr:
+            lines.append("\n*(no output)*")
+
+        # Footer
+        lines.append(
+            f"\n---\n"
+            f"*Language: `{command.language}` · "
+            f"Image: `{result.image}` · "
+            f"Duration: {result.duration_seconds:.1f}s*"
+        )
+
+        return "\n".join(lines)
+
+    # --- @mention Q&A handling ---
 
     async def handle(self, event: IssueCommentEvent) -> None:
         owner, repo = event.repository.full_name.split("/", 1)

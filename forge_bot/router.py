@@ -13,6 +13,7 @@ from forge_bot.models import (
     IssuesEvent,
     PullRequestEvent,
 )
+from forge_bot.sandbox.parser import parse_run_command
 
 if TYPE_CHECKING:
     from forge_bot.clients.forge import ForgeClient
@@ -92,8 +93,23 @@ async def dispatch(
             event.repository.full_name,
         )
         if forge_client and llm_client and settings:
-            handler = IssueCommentHandler(forge_client, llm_client, settings, bot_username)
-            await handler.handle(event)
+            handler = IssueCommentHandler(
+                forge_client, llm_client, settings, bot_username,
+            )
+            # Check for /run command
+            run_cmd = parse_run_command(
+                event.comment.body, settings.bot_command_prefix,
+            )
+            if run_cmd:
+                logger.info(
+                    "Dispatching /run %s on %s#%d",
+                    run_cmd.language,
+                    event.repository.full_name,
+                    event.issue.number,
+                )
+                await handler.handle_run(event, run_cmd)
+            else:
+                await handler.handle(event)
         return
 
     # --- Issue events (opened, assigned) ---

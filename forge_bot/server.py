@@ -56,7 +56,30 @@ async def lifespan(app: FastAPI):
     llm_client = LLMClient(app.state.settings)
     app.state.llm_client = llm_client
 
-    # TODO Phase 5: Initialize sandbox orchestrator, pre-pull images
+    # Sandbox: pre-pull images in the background (non-blocking)
+    if app.state.settings.sandbox_enabled:
+        try:
+            import docker as docker_lib
+
+            from forge_bot.sandbox.images import ImageRegistry
+
+            registry = ImageRegistry()
+            if app.state.settings.sandbox_images_file:
+                registry.load_override_file(
+                    app.state.settings.sandbox_images_file,
+                )
+            docker_client = docker_lib.from_env()
+            await registry.prepull(
+                docker_client,
+                app.state.settings.sandbox_prepull_images,
+            )
+            docker_client.close()
+            logger.info("Sandbox image pre-pull complete")
+        except Exception:
+            logger.warning(
+                "Sandbox image pre-pull failed (sandbox will pull on demand)",
+                exc_info=True,
+            )
 
     yield
 
