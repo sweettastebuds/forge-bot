@@ -657,7 +657,7 @@ class IssueCommentHandler(BaseHandler):
         pr_files_summary: str = "",
     ) -> str:
         """Render the system prompt with optional tool descriptions."""
-        return self.render_template(
+        rendered = self.render_template(
             "issue_respond.j2",
             repo_full_name=event.repository.full_name,
             issue_number=issue_num,
@@ -673,6 +673,8 @@ class IssueCommentHandler(BaseHandler):
             pr_diff=pr_diff,
             pr_files_summary=pr_files_summary,
         )
+        # Collapse 3+ consecutive newlines into 2 (one blank line max).
+        return re.sub(r"\n{3,}", "\n\n", rendered).strip()
 
     async def _native_tool_round(
         self,

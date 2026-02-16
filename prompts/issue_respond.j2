@@ -17,25 +17,24 @@ Users can also use these slash commands when mentioning you:
 - `/run <language>` + a fenced code block — Execute code in a sandboxed container (e.g., `/run python` with a ```python block). Add `--net` for network access.
 - `/index` — Re-index the repository for improved context retrieval (requires RAG to be enabled).
 If a user asks what you can do, lists these capabilities. If a user tries a command that does not exist (like `/debug`), let them know it is not available and list the commands above.
+{%- if conversation_summary %}
 
-{% if conversation_summary %}
 === EARLIER CONVERSATION (summarized) ===
 {{ conversation_summary }}
-{% endif %}
+{%- endif %}
 
 === RECENT CONVERSATION ===
-{% for comment in thread_comments %}
+{%- for comment in thread_comments %}
 **{{ comment.user }}** ({{ comment.created_at }}):
 {{ comment.body }}
+{% endfor -%}
+{%- if repo_tree %}
 
-{% endfor %}
-
-{% if repo_tree %}
 === REPOSITORY FILE TREE (these are the ONLY files that exist) ===
 ```
 {{ repo_tree }}
 ```
-{% if tool_descriptions %}
+{%- if tool_descriptions %}
 
 === AVAILABLE TOOLS ===
 {{ tool_descriptions }}
@@ -43,50 +42,55 @@ If a user asks what you can do, lists these capabilities. If a user tries a comm
 IMPORTANT: If you need information not shown below, USE a tool to retrieve it.
 Do not guess file contents — use fetch_file to read the actual file.
 When you use a tool, put ONLY the tool block in your response — do not answer the question in the same response. Wait for the tool results first, then answer.
-{% else %}
+{%- else %}
 The following files exist in the repository. You cannot read their contents unless they appear in the FILE CONTENTS section below.
-{% endif %}
-{% endif %}
-{% if file_context %}
+{%- endif %}
+{%- endif %}
+{%- if file_context %}
+
 === FILE CONTENTS (real data — use ONLY these contents) ===
-{% for file in file_context %}
+{%- for file in file_context %}
 --- {{ file.path }} ---
 ```
 {{ file.content }}
 ```
-{% endfor %}
-{% endif %}
-{% if pr_diff %}
+{%- endfor %}
+{%- endif %}
+{%- if pr_diff %}
+
 === PULL REQUEST DIFF (real data — this is the actual diff for this PR) ===
-{% if pr_files_summary %}
+{%- if pr_files_summary %}
 **Changed files:**
 {{ pr_files_summary }}
-{% endif %}
+{%- endif %}
 ```diff
 {{ pr_diff }}
 ```
-{% endif %}
-{% if commit_context %}
+{%- endif %}
+{%- if commit_context %}
+
 === COMMIT INFORMATION (real data — use ONLY these commits) ===
-{% for commit in commit_context %}
+{%- for commit in commit_context %}
 --- {{ commit.sha[:12] }} ---
 {{ commit.summary }}
-{% endfor %}
-{% endif %}
-{% if attachments %}
+{%- endfor %}
+{%- endif %}
+{%- if attachments %}
+
 === ATTACHMENTS ===
-{% for att in attachments %}
-{% if att.content %}
+{%- for att in attachments %}
+{%- if att.content %}
 - {{ att.alt }} ({{ att.url }}):
 ```
 {{ att.content }}
 ```
-{% else %}
+{%- else %}
 - {{ att.alt }}: {{ att.url }} (binary/image — cannot display contents)
-{% endif %}
-{% endfor %}
-{% endif %}
-{% if rag_context %}
+{%- endif %}
+{%- endfor %}
+{%- endif %}
+{%- if rag_context %}
+
 === ADDITIONAL REPOSITORY CONTEXT ===
 {{ rag_context }}
-{% endif %}
+{%- endif %}

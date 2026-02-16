@@ -4,38 +4,22 @@
 
 ### Action Items
 
-- [ ] **PR context in issue_comment handler** — When the bot is @mentioned on
-  a PR (detected via `event.is_pull` or `issue.pull_request is not None`),
-  the handler currently has NO access to the PR diff, changed files, or PR
-  metadata. The user says "review this PR" and the bot says "I don't have
-  access to that information." Fix: when `is_pull` is true, fetch the PR diff
-  and changed files (like `PullRequestHandler` does) and include them in
-  the prompt context. Also detect PR references like `#2` in comments and
-  fetch the linked PR's diff/details via a new tool or pre-fetch.
+- [x] **PR context in issue_comment handler** — Fetch PR diff and changed
+  files when the bot is @mentioned on a PR. Includes truncation and graceful
+  degradation on API failure.
 
-- [ ] **Slash command awareness in LLM prompt** — The LLM has no knowledge of
-  the bot's available slash commands (`/run`, `/index`, future `/debug`).
-  If a user asks "what can you do?" or types an unknown command, the bot
-  can't describe its own capabilities. The router dispatches `/run` and
-  `/index` before the LLM is invoked, but the prompt template should include
-  a capabilities section so the LLM can guide users. Commands should be
-  discoverable — listed, described, with usage examples. Example failure:
-  user types `/debug` and bot says "The /debug command is not directly
-  supported by the available tools."
+- [x] **Slash command awareness in LLM prompt** — Added YOUR CAPABILITIES
+  section to the prompt template listing `/run` and `/index` with usage
+  examples. LLM can now guide users on available commands.
 
-- [ ] **Per-request trace logging** — Add a structured INFO-level summary log
-  line at the end of each tool loop. Should include: mode used (native/prompt),
-  rounds taken, tools invoked (names + args), whether fallback triggered,
-  prompt size (chars), reply length (chars). Makes it easy to grep and share
-  for debugging.
+- [x] **Per-request trace logging** — Structured INFO-level TRACE log line
+  at the end of each tool loop: mode, rounds, tool count, fallback flag,
+  prompt size, reply length.
 
-- [ ] **Reduce whitespace bloat in prompts** — The Jinja2 template
-  (`issue_respond.j2`) doesn't use whitespace control (`{%- -%}`), so every
-  `{% if %}` / `{% for %}` / `{% endif %}` block tag emits an extra blank
-  line. Between sections this compounds to 3-4 blank lines. File content
-  included in prompts also preserves original blank lines. For small-context
-  models these wasted tokens matter. Fix: add Jinja2 whitespace trimming
-  and optionally collapse consecutive blank lines in file content.
+- [x] **Reduce whitespace bloat in prompts** — Added Jinja2 whitespace
+  control (`{%- -%}`) to all block tags in `issue_respond.j2` and added
+  post-render collapsing of consecutive blank lines (3+ → 2) in
+  `_build_system_prompt`.
 
 ### Backlog
 
