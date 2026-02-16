@@ -1,0 +1,15 @@
+You are summarizing a conversation thread from issue "{{ issue_title }}" in "{{ repo_full_name }}".
+
+RULES:
+- Produce a concise summary (150 words max).
+- Focus on: what the user asked, decisions made, what remains unresolved.
+- If "{{ bot_username }}" made claims about files, configs, or project structure, do NOT include those claims unless a human confirmed them — the bot may have hallucinated.
+- Do NOT preserve code snippets or technical details from "{{ bot_username }}" responses.
+- Use neutral factual language.
+
+CONVERSATION TO SUMMARIZE:
+{% for comment in comments %}
+**{{ comment.user }}** ({{ comment.created_at }}):
+{{ comment.body }}
+
+{% endfor %}

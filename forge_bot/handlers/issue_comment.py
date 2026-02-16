@@ -9,16 +9,28 @@ from forge_bot.models import IssueCommentEvent
 
 logger = logging.getLogger("forge_bot.handlers.issue_comment")
 
-# --- Limits ---
+# --- Fixed limits (not model-dependent) ---
 _MAX_FILE_FETCHES = 5
-_MAX_FILE_CHARS = 8_000
-_MAX_TREE_ENTRIES = 200
 _MAX_GROUNDING_FILES = 3
-_MAX_GROUNDING_FILE_CHARS = 4_000
 _MAX_COMMIT_FETCHES = 3
 _MAX_ATTACHMENT_DOWNLOADS = 3
 _MAX_ATTACHMENT_CONTENT_CHARS = 6_000
 _MAX_FETCH_ROUNDS = 2
+
+
+def _context_limits(context_window: int) -> dict[str, int]:
+    """Derive context budgets from the model's context window size.
+
+    All values scale with the context window so small models get tighter
+    budgets and large models can use more context.
+    """
+    return {
+        "max_recent_comments": min(max(context_window // 2000, 2), 10),
+        "summary_max_tokens": min(max(context_window // 16, 128), 512),
+        "max_tree_entries": min(max(context_window // 40, 50), 200),
+        "max_file_chars": min(max(context_window * 2, 2000), 8000),
+        "max_grounding_file_chars": min(max(context_window, 1000), 4000),
+    }
 
 # --- Grounding files to fetch proactively (in priority order) ---
 _GROUNDING_FILES = [
@@ -113,12 +125,14 @@ class IssueCommentHandler(BaseHandler):
         owner, repo = event.repository.full_name.split("/", 1)
         issue_num = event.issue.number
         default_branch = event.repository.default_branch
+        limits = _context_limits(self.settings.llm_context_window)
 
         logger.info(
-            "Handling @mention on %s#%d by %s",
+            "Handling @mention on %s#%d by %s (context_window=%d)",
             event.repository.full_name,
             issue_num,
             event.sender.login,
+            self.settings.llm_context_window,
         )
 
         # Fetch the full conversation thread for context.
@@ -134,19 +148,44 @@ class IssueCommentHandler(BaseHandler):
             for c in raw_comments
         ]
 
+        # --- Conversation trimming: summarize old comments ---
+        conversation_summary: str | None = None
+        recent_comments = thread_comments
+        max_recent = limits["max_recent_comments"]
+
+        if len(thread_comments) > max_recent:
+            split_index = len(thread_comments) - max_recent
+            old_comments = thread_comments[:split_index]
+            recent_comments = thread_comments[split_index:]
+            conversation_summary = await self._summarize_old_comments(
+                old_comments,
+                event.repository.full_name,
+                event.issue.title,
+                self.bot_username,
+                max_tokens=limits["summary_max_tokens"],
+            )
+            logger.info(
+                "Summarized %d old comments into %d chars for %s#%d",
+                len(old_comments),
+                len(conversation_summary),
+                event.repository.full_name,
+                issue_num,
+            )
+
         # --- Repo context: tree + referenced files ---
         repo_tree_text, tree_paths = await self._fetch_repo_tree(
-            owner, repo, default_branch
+            owner, repo, default_branch, limits
         )
         file_context = await self._fetch_referenced_files(
-            owner, repo, event, thread_comments, default_branch
+            owner, repo, event, thread_comments, default_branch, limits
         )
 
         # Proactively fetch grounding files if few/no referenced files.
         if len(file_context) < _MAX_GROUNDING_FILES and tree_paths:
             already_fetched = {f["path"] for f in file_context}
             grounding = await self._fetch_grounding_files(
-                owner, repo, tree_paths, already_fetched, default_branch
+                owner, repo, tree_paths, already_fetched, default_branch,
+                limits,
             )
             file_context.extend(grounding)
 
@@ -167,13 +206,15 @@ class IssueCommentHandler(BaseHandler):
             repo=repo,
             event=event,
             issue_num=issue_num,
-            thread_comments=thread_comments,
+            thread_comments=recent_comments,
+            conversation_summary=conversation_summary,
             repo_tree_text=repo_tree_text,
             tree_paths=tree_paths,
             file_context=file_context,
             commit_context=commit_context,
             attachments=attachments,
             default_branch=default_branch,
+            limits=limits,
         )
 
         # Post the reply back to the issue/PR.
@@ -201,14 +242,17 @@ class IssueCommentHandler(BaseHandler):
         event: IssueCommentEvent,
         issue_num: int,
         thread_comments: list[dict[str, str]],
+        conversation_summary: str | None,
         repo_tree_text: str,
         tree_paths: set[str],
         file_context: list[dict[str, str]],
         commit_context: list[dict[str, str]],
         attachments: list[dict[str, str]],
         default_branch: str,
+        limits: dict[str, int],
     ) -> str:
         """Call the LLM, and if it requests files via [FETCH:], fetch and re-prompt."""
+        max_file_chars = limits["max_file_chars"]
         for round_num in range(_MAX_FETCH_ROUNDS + 1):
             system_prompt = self.render_template(
                 "issue_respond.j2",
@@ -217,6 +261,7 @@ class IssueCommentHandler(BaseHandler):
                 issue_title=event.issue.title,
                 rag_context=None,
                 thread_comments=thread_comments,
+                conversation_summary=conversation_summary,
                 repo_tree=repo_tree_text,
                 file_context=file_context,
                 attachments=attachments,
@@ -262,9 +307,9 @@ class IssueCommentHandler(BaseHandler):
                     content = await self.forge.get_file_content(
                         owner, repo, path, ref=effective_ref
                     )
-                    if len(content) > _MAX_FILE_CHARS:
+                    if len(content) > max_file_chars:
                         content = (
-                            content[:_MAX_FILE_CHARS] + "\n... (truncated)"
+                            content[:max_file_chars] + "\n... (truncated)"
                         )
                     label = f"{path}@{ref}" if ref else path
                     file_context.append({"path": label, "content": content})
@@ -299,7 +344,8 @@ class IssueCommentHandler(BaseHandler):
     # --- Context gathering methods ---
 
     async def _fetch_repo_tree(
-        self, owner: str, repo: str, default_branch: str
+        self, owner: str, repo: str, default_branch: str,
+        limits: dict[str, int],
     ) -> tuple[str, set[str]]:
         """Fetch the repo file tree and format as a compact listing."""
         try:
@@ -310,7 +356,7 @@ class IssueCommentHandler(BaseHandler):
                 e["path"]
                 for e in tree
                 if e.get("type") == "blob"
-            ][:_MAX_TREE_ENTRIES]
+            ][:limits["max_tree_entries"]]
             if files:
                 return "\n".join(files), set(files)
         except Exception:
@@ -329,8 +375,10 @@ class IssueCommentHandler(BaseHandler):
         event: IssueCommentEvent,
         thread_comments: list[dict[str, str]],
         default_branch: str,
+        limits: dict[str, int],
     ) -> list[dict[str, str]]:
         """Find file paths mentioned in the conversation and fetch content."""
+        max_file_chars = limits["max_file_chars"]
         all_text = event.issue.body or ""
         for c in thread_comments:
             all_text += "\n" + c.get("body", "")
@@ -346,9 +394,9 @@ class IssueCommentHandler(BaseHandler):
                 content = await self.forge.get_file_content(
                     owner, repo, path, ref=default_branch
                 )
-                if len(content) > _MAX_FILE_CHARS:
+                if len(content) > max_file_chars:
                     content = (
-                        content[:_MAX_FILE_CHARS] + "\n... (truncated)"
+                        content[:max_file_chars] + "\n... (truncated)"
                     )
                 fetched.append({"path": path, "content": content})
                 logger.info("Fetched referenced file %s", path)
@@ -363,8 +411,10 @@ class IssueCommentHandler(BaseHandler):
         tree_paths: set[str],
         already_fetched: set[str],
         default_branch: str,
+        limits: dict[str, int],
     ) -> list[dict[str, str]]:
         """Proactively fetch key project files to ground the LLM."""
+        max_chars = limits["max_grounding_file_chars"]
         targets = []
         for candidate in _GROUNDING_FILES:
             if candidate in tree_paths and candidate not in already_fetched:
@@ -378,9 +428,9 @@ class IssueCommentHandler(BaseHandler):
                 content = await self.forge.get_file_content(
                     owner, repo, path, ref=default_branch
                 )
-                if len(content) > _MAX_GROUNDING_FILE_CHARS:
+                if len(content) > max_chars:
                     content = (
-                        content[:_MAX_GROUNDING_FILE_CHARS]
+                        content[:max_chars]
                         + "\n... (truncated)"
                     )
                 fetched.append({"path": path, "content": content})
@@ -461,3 +511,49 @@ class IssueCommentHandler(BaseHandler):
                 )
 
         return attachments
+
+    # --- Conversation summarization ---
+
+    async def _summarize_old_comments(
+        self,
+        old_comments: list[dict[str, str]],
+        repo_full_name: str,
+        issue_title: str,
+        bot_username: str,
+        *,
+        max_tokens: int = 512,
+    ) -> str:
+        """Summarize older conversation comments into a compact paragraph.
+
+        Uses a dedicated template that instructs the LLM to discard
+        unconfirmed bot claims, breaking the hallucination feedback loop.
+        """
+        summary_prompt = self.render_template(
+            "conversation_summary.j2",
+            repo_full_name=repo_full_name,
+            issue_title=issue_title,
+            bot_username=bot_username,
+            comments=old_comments,
+        )
+        try:
+            summary = await self.llm.chat(
+                summary_prompt,
+                "Summarize the conversation above.",
+                temperature=0.1,
+                max_tokens=max_tokens,
+            )
+            return summary.strip()
+        except Exception:
+            logger.warning(
+                "Failed to summarize old comments for %s; using truncation",
+                repo_full_name,
+            )
+            # Fallback: simple truncation of first 2 + last comment.
+            parts: list[str] = []
+            for c in old_comments[:2]:
+                parts.append(f"{c['user']}: {c['body'][:200]}")
+            if len(old_comments) > 2:
+                parts.append(f"... ({len(old_comments) - 2} more comments) ...")
+                last = old_comments[-1]
+                parts.append(f"{last['user']}: {last['body'][:200]}")
+            return "\n".join(parts)

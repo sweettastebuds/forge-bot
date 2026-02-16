@@ -68,6 +68,47 @@ All config via environment variables. See `.env.example` for the full list.
 | `SANDBOX_ENABLED` | `true` | Enable `/run` code execution |
 | `RAG_ENABLED` | `false` | Enable codebase-aware context |
 
+## Local Models (Ollama)
+
+forge-bot works with any OpenAI-compatible endpoint, including [Ollama](https://ollama.com) for local/self-hosted models.
+
+### Setup
+
+```bash
+# .env
+LLM_BASE_URL=http://ollama:11434/v1
+LLM_MODEL=gemma3:12b
+LLM_API_KEY=ollama              # Ollama ignores this but the field is required
+LLM_CONTEXT_WINDOW=8192         # Match your model's context window
+```
+
+### Choosing a Model
+
+| Size | Examples | VRAM | Best For | Limitations |
+|------|----------|------|----------|-------------|
+| 1-3B | gemma3:1b, phi-4-mini | 2-4 GB | Simple Q&A, fast responses | Poor instruction following, frequent hallucination, limited context |
+| 7-8B | mistral:7b, llama3.1:8b, gemma3:4b | 6-8 GB | General use, good balance | May struggle with complex multi-file context |
+| 12-14B | gemma3:12b, qwen2.5:14b | 10-16 GB | Code review, detailed answers | Needs adequate VRAM, slower |
+| 27B+ | gemma3:27b, llama3.1:70b, qwen2.5:72b | 20-48 GB | Best local quality | High hardware requirements |
+
+### Recommended Settings
+
+| Model Size | `LLM_CONTEXT_WINDOW` | `LLM_MAX_TOKENS` | `LLM_TEMPERATURE` | Notes |
+|------------|----------------------|-------------------|--------------------|-------|
+| 1-3B | 2048 | 1024 | 0.1 | Lower temperature reduces hallucination |
+| 7-8B | 4096 | 2048 | 0.15 | Good starting point for most setups |
+| 12-14B | 8192 | 4096 | 0.2 | Default settings work well |
+| 27B+ | 32768 | 4096 | 0.2 | Can handle larger context comfortably |
+| Cloud API | 32768 | 4096 | 0.2 | GPT-4o, Claude, etc. |
+
+### Tips for Small Models
+
+- **Set `LLM_CONTEXT_WINDOW` accurately** — the bot auto-adjusts how much conversation history and file context it sends to the model based on this value
+- **Lower the temperature** — `0.1` reduces creative hallucination on smaller models
+- **Reduce `LLM_MAX_TOKENS`** — smaller models produce better, more focused output with lower limits
+- **Use Ollama's `num_ctx` parameter** — ensure Ollama allocates enough context: `ollama run gemma3:12b --num_ctx 8192`
+- **Monitor VRAM** — if the model runs out of VRAM it falls back to CPU, causing extreme slowdowns
+
 ## Project Structure
 
 ```

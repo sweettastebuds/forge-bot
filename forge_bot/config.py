@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     llm_max_tokens: int = Field(default=4096)
     llm_timeout: int = Field(default=120, description="Request timeout in seconds")
     llm_max_concurrent: int = Field(default=3, description="Max parallel LLM requests")
+    llm_context_window: int = Field(
+        default=8192,
+        description="Model context window in tokens"
+        " — controls conversation trimming and context budgets",
+    )
 
     # --- Sandbox ---
     sandbox_enabled: bool = Field(default=True)

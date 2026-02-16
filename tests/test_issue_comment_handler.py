@@ -8,6 +8,7 @@ import pytest
 from forge_bot.config import Settings
 from forge_bot.handlers.issue_comment import (
     IssueCommentHandler,
+    _context_limits,
     _extract_attachments,
     _extract_commit_shas,
     _extract_file_paths,
@@ -631,3 +632,236 @@ def test_parse_fetch_request_strips_whitespace():
     path, ref = _parse_fetch_request("  src/main.py @ develop  ")
     assert path == "src/main.py"
     assert ref == "develop"
+
+
+# --- Context limits tests ---
+
+
+def test_context_limits_small_window():
+    limits = _context_limits(2048)
+    assert limits["max_recent_comments"] == 2
+    assert limits["summary_max_tokens"] == 128
+    assert limits["max_tree_entries"] == 51
+    assert limits["max_file_chars"] == 4096
+    assert limits["max_grounding_file_chars"] == 2048
+
+
+def test_context_limits_large_window():
+    limits = _context_limits(32768)
+    assert limits["max_recent_comments"] == 10
+    assert limits["summary_max_tokens"] == 512
+    assert limits["max_tree_entries"] == 200
+    assert limits["max_file_chars"] == 8000
+    assert limits["max_grounding_file_chars"] == 4000
+
+
+def test_context_limits_default_window():
+    limits = _context_limits(8192)
+    assert limits["max_recent_comments"] == 4
+    assert limits["summary_max_tokens"] == 512
+    assert limits["max_tree_entries"] == 200
+
+
+# --- Conversation summarization tests ---
+
+
+async def test_short_conversation_no_summarization(
+    mock_llm: AsyncMock,
+    settings: Settings,
+):
+    """When thread has <= max_recent_comments, no summarization occurs."""
+    event = _make_event(comment_body="@forge-bot explain this")
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = [
+        {
+            "id": i,
+            "body": f"Comment {i}",
+            "user": {"login": "developer"},
+            "created_at": f"2026-01-01T00:0{i}:00Z",
+        }
+        for i in range(3)
+    ]
+    mock_forge.get_repo_tree.return_value = []
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    # LLM.chat should be called exactly once (no summarization call).
+    assert mock_llm.chat.await_count == 1
+    system_prompt = mock_llm.chat.call_args.args[0]
+    assert "EARLIER CONVERSATION" not in system_prompt
+
+
+async def test_long_conversation_triggers_summarization(
+    settings: Settings,
+):
+    """When thread exceeds max_recent_comments, old comments are summarized."""
+    event = _make_event(comment_body="@forge-bot summarize progress")
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = [
+        {
+            "id": i,
+            "body": f"Comment number {i} about the project",
+            "user": {"login": "developer" if i % 2 == 0 else "forge-bot"},
+            "created_at": f"2026-01-01T00:{i:02d}:00Z",
+        }
+        for i in range(10)
+    ]
+    mock_forge.get_repo_tree.return_value = []
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    mock_llm = AsyncMock()
+    mock_llm.chat.side_effect = [
+        "The conversation covered project setup and configuration.",
+        "Here is my response based on the context.",
+    ]
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    # LLM.chat called twice: once for summarization, once for response.
+    assert mock_llm.chat.await_count == 2
+
+    # First call: summarization.
+    summary_system = mock_llm.chat.call_args_list[0].args[0]
+    assert "CONVERSATION TO SUMMARIZE" in summary_system
+    assert "forge-bot" in summary_system
+
+    # Second call: main response includes summary.
+    main_system = mock_llm.chat.call_args_list[1].args[0]
+    assert "EARLIER CONVERSATION" in main_system
+    assert "project setup and configuration" in main_system
+
+
+async def test_summarization_failure_falls_back(
+    settings: Settings,
+):
+    """If summarization LLM call fails, handler falls back to truncation."""
+    event = _make_event(comment_body="@forge-bot help")
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = [
+        {
+            "id": i,
+            "body": f"Comment {i}",
+            "user": {"login": "developer"},
+            "created_at": f"2026-01-01T00:{i:02d}:00Z",
+        }
+        for i in range(10)
+    ]
+    mock_forge.get_repo_tree.return_value = []
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    mock_llm = AsyncMock()
+    mock_llm.chat.side_effect = [
+        RuntimeError("LLM is down"),
+        "Here is my response.",
+    ]
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    # Should still post a reply (fell back on truncation summary).
+    mock_forge.post_comment.assert_awaited_once()
+    # The main call should have a fallback summary in it.
+    main_system = mock_llm.chat.call_args_list[1].args[0]
+    assert "EARLIER CONVERSATION" in main_system
+
+
+# --- Prompt structure tests ---
+
+
+async def test_prompt_structure_ground_truth_after_conversation(
+    mock_llm: AsyncMock,
+    settings: Settings,
+):
+    """Ground truth sections (file tree, file contents) appear after conversation."""
+    event = _make_event(comment_body="@forge-bot what is this project?")
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = [
+        {
+            "id": 1,
+            "body": "Some comment",
+            "user": {"login": "developer"},
+            "created_at": "2026-01-01T00:00:00Z",
+        },
+    ]
+    mock_forge.get_repo_tree.return_value = [
+        {"path": "README.md", "type": "blob", "size": 50},
+        {"path": "src/main.py", "type": "blob", "size": 100},
+    ]
+    mock_forge.get_file_content.return_value = "# My Project"
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    system_prompt = mock_llm.chat.call_args.args[0]
+
+    # Verify ordering: conversation before ground truth sections.
+    conv_pos = system_prompt.index("=== RECENT CONVERSATION ===")
+    tree_pos = system_prompt.index("=== REPOSITORY FILE TREE")
+    file_pos = system_prompt.index("=== FILE CONTENTS")
+
+    assert conv_pos < tree_pos, "Conversation should appear before file tree"
+    assert tree_pos < file_pos, "File tree should appear before file contents"
+
+
+async def test_prompt_contains_anti_hallucination_rules(
+    mock_llm: AsyncMock,
+    settings: Settings,
+):
+    """The system prompt includes explicit anti-hallucination instructions."""
+    event = _make_event(comment_body="@forge-bot hello")
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = []
+    mock_forge.get_repo_tree.return_value = []
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    system_prompt = mock_llm.chat.call_args.args[0]
+    assert "MANDATORY RULES" in system_prompt
+    assert "do NOT guess" in system_prompt
+    assert "NEVER" in system_prompt
+    assert "simulating" in system_prompt
+
+
+async def test_summarization_prompt_filters_bot_claims(
+    settings: Settings,
+):
+    """The conversation_summary.j2 template warns about bot hallucinations."""
+    event = _make_event(comment_body="@forge-bot update")
+
+    mock_forge = AsyncMock()
+    mock_forge.get_issue_comments.return_value = [
+        {
+            "id": i,
+            "body": f"Comment {i}",
+            "user": {"login": "developer"},
+            "created_at": f"2026-01-01T00:{i:02d}:00Z",
+        }
+        for i in range(10)
+    ]
+    mock_forge.get_repo_tree.return_value = []
+    mock_forge.post_comment.return_value = {"id": 10}
+
+    mock_llm = AsyncMock()
+    mock_llm.chat.side_effect = [
+        "Users discussed configuration changes.",
+        "Here is my response.",
+    ]
+
+    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
+    await handler.handle(event)
+
+    # The summarization call's system prompt should mention hallucination risk.
+    summary_system = mock_llm.chat.call_args_list[0].args[0]
+    assert "hallucinated" in summary_system.lower()
+    assert "forge-bot" in summary_system

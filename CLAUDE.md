@@ -35,9 +35,9 @@ forge_bot/
     base.py           — Abstract base: forge_client, llm_client, config injected
     pull_request.py   — PR opened/synchronized: fetch diff, build review prompt, post comment
     issue_comment.py  — Comment created: @mention reply with repo context
-                        Fetches repo tree (using default_branch from webhook),
-                        auto-fetches grounding files (README, pyproject.toml, etc.),
-                        fetches files referenced in thread, detects commit SHAs,
+                        Dynamic context budgets via _context_limits(context_window),
+                        conversation summarization for long threads,
+                        fetches repo tree, grounding files, referenced files/commits,
                         downloads text attachments, runs LLM with fetch-loop
                         (LLM can request files via [FETCH: path] or [FETCH: path@branch],
                         handler fetches and re-prompts, max 2 rounds)
@@ -95,6 +95,9 @@ forge_bot/
 7. **Prompt templates**: Jinja2 .j2 files in prompts/ dir. Low temperature (0.2). Severity prefixes (🔴🟡💡).
 8. **Repo context in issues**: IssueCommentHandler fetches repo tree (using default_branch from webhook payload), proactively fetches grounding files (README.md, pyproject.toml, etc.), auto-fetches files mentioned in thread (max 5, 8k chars each), detects commit SHAs and fetches commit info, downloads text-based attachments. LLM can request additional files via `[FETCH: path]` or `[FETCH: path@branch]` markers — handler fetches and re-prompts up to 2 rounds.
 9. **Graceful degradation**: All context-fetching (tree, files, commits, attachments) is wrapped in try/except — failures logged at WARNING level, never block the reply.
+10. **Dynamic context limits**: `_context_limits(context_window)` derives max_recent_comments, summary_max_tokens, max_tree_entries, max_file_chars, max_grounding_file_chars from LLM_CONTEXT_WINDOW. Small models get fewer comments and smaller context; large models get more.
+11. **Conversation summarization**: When thread exceeds max_recent_comments, older comments are summarized via a dedicated LLM call (conversation_summary.j2, temp=0.1). Summary explicitly filters bot hallucinations. Fallback: naive truncation (first 2 + last comment) on LLM failure.
+12. **Anti-hallucination prompt**: issue_respond.j2 opens with MANDATORY RULES forbidding fabrication of files, commits, or configs. Ground truth data placed at end of prompt for recency attention bias.
 
 ## Commands
 
@@ -124,7 +127,8 @@ FORGE_INSTANCE_URL, FORGE_API_TOKEN, FORGE_WEBHOOK_SECRET, LLM_API_KEY
 
 LLM_BASE_URL (default: <https://api.openai.com/v1>), LLM_MODEL (gpt-4o),
 LLM_TEMPERATURE (0.2), LLM_MAX_TOKENS (4096), LLM_TIMEOUT (120),
-LLM_MAX_CONCURRENT (3), SANDBOX_ENABLED (true), SANDBOX_TIMEOUT (60),
+LLM_MAX_CONCURRENT (3), LLM_CONTEXT_WINDOW (8192 — match your model),
+SANDBOX_ENABLED (true), SANDBOX_TIMEOUT (60),
 SANDBOX_PREPULL_IMAGES (python,node), RAG_ENABLED (false), LOG_LEVEL (INFO)
 
 ## Style
