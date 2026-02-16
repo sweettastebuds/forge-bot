@@ -73,7 +73,7 @@ class IssueCommentHandler(BaseHandler):
         # 2. Create workspace container
         container: ContainerManager | None = None
         try:
-            await status.update_phase("Cloning repository...")
+            await status.update_phase("Starting workspace...")
             container = ContainerManager(
                 self.settings,
                 clone_url,
@@ -109,6 +109,8 @@ class IssueCommentHandler(BaseHandler):
                 event=event,
                 registry=registry,
                 status=status,
+                clone_url=container.clone_url,
+                default_branch=default_branch,
             )
 
             # 5. Pre-post verification
@@ -151,13 +153,19 @@ class IssueCommentHandler(BaseHandler):
         event: IssueCommentEvent,
         registry: ToolRegistry,
         status: StatusCommentManager,
+        clone_url: str,
+        default_branch: str,
     ) -> tuple[str, list[tuple[str, ToolResult]]]:
         """Run the LLM with tools, executing calls and verifying each round.
 
         Returns (final_reply_text, list_of_all_tool_results).
         """
         user_question = event.comment.body
-        system_prompt = self._build_system_prompt(event, registry)
+        system_prompt = self._build_system_prompt(
+            event, registry,
+            clone_url=clone_url,
+            default_branch=default_branch,
+        )
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
@@ -368,6 +376,9 @@ class IssueCommentHandler(BaseHandler):
         self,
         event: IssueCommentEvent,
         registry: ToolRegistry,
+        *,
+        clone_url: str,
+        default_branch: str,
     ) -> str:
         """Build the system prompt with context and tool descriptions."""
         return self.render_template(
@@ -377,6 +388,8 @@ class IssueCommentHandler(BaseHandler):
             issue_title=event.issue.title,
             bot_username=self.bot_username,
             tool_descriptions=registry.prompt_text(),
+            clone_url=clone_url,
+            default_branch=default_branch,
         )
 
     @staticmethod

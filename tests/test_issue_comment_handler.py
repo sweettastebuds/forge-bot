@@ -190,11 +190,17 @@ class TestBuildSystemPrompt:
         registry = MagicMock()
         registry.prompt_text.return_value = "## Tools\n- exec: run commands"
 
-        prompt = handler._build_system_prompt(event, registry)
+        prompt = handler._build_system_prompt(
+            event, registry,
+            clone_url="https://token@gitea.example.com/owner/repo.git",
+            default_branch="main",
+        )
         assert "owner/repo" in prompt
         assert "bot" in prompt
         assert "exec" in prompt
         assert "NEVER" in prompt
+        assert "clone" in prompt.lower()
+        assert "main" in prompt
 
 
 # -- _tool_loop --
@@ -223,7 +229,9 @@ class TestToolLoop:
         registry.register(SearchApiTool(api))
 
         reply, results = await handler._tool_loop(
-            event=event, registry=registry, status=status
+            event=event, registry=registry, status=status,
+            clone_url="https://token@gitea.example.com/owner/repo.git",
+            default_branch="main",
         )
         assert reply == "This repo is a webhook bot."
         assert results == []
@@ -254,7 +262,9 @@ class TestToolLoop:
         registry.register(SearchApiTool(api))
 
         reply, results = await handler._tool_loop(
-            event=event, registry=registry, status=status
+            event=event, registry=registry, status=status,
+            clone_url="https://token@gitea.example.com/owner/repo.git",
+            default_branch="main",
         )
         assert reply == "I found some file endpoints."
         assert len(results) == 1
@@ -280,7 +290,9 @@ class TestToolLoop:
         registry.register(SearchApiTool(api))
 
         reply, results = await handler._tool_loop(
-            event=event, registry=registry, status=status
+            event=event, registry=registry, status=status,
+            clone_url="https://token@gitea.example.com/owner/repo.git",
+            default_branch="main",
         )
         assert reply == "Fallback answer"
 
@@ -304,7 +316,9 @@ class TestToolLoop:
         registry.register(SearchApiTool(api))
 
         reply, results = await handler._tool_loop(
-            event=event, registry=registry, status=status
+            event=event, registry=registry, status=status,
+            clone_url="https://token@gitea.example.com/owner/repo.git",
+            default_branch="main",
         )
         assert "error" in reply.lower()
 
@@ -335,7 +349,9 @@ class TestToolLoop:
         registry.register(SearchApiTool(api))
 
         reply, results = await handler._tool_loop(
-            event=event, registry=registry, status=status
+            event=event, registry=registry, status=status,
+            clone_url="https://token@gitea.example.com/owner/repo.git",
+            default_branch="main",
         )
         # Only the first 2 should execute (3rd is blocked as duplicate)
         assert len(results) == 2
@@ -365,7 +381,9 @@ class TestToolLoop:
         registry.register(SearchApiTool(api))
 
         reply, results = await handler._tool_loop(
-            event=event, registry=registry, status=status
+            event=event, registry=registry, status=status,
+            clone_url="https://token@gitea.example.com/owner/repo.git",
+            default_branch="main",
         )
         # Should have broken out early due to stuck detection
         assert llm.chat_with_tools.call_count < 10
@@ -476,6 +494,8 @@ class TestHandleFlow:
         mock_container.create = AsyncMock()
         mock_container.destroy = AsyncMock()
         mock_container.exec = AsyncMock()
+        mock_container.clone_url = "https://token@gitea.example.com/owner/repo.git"
+        mock_container.default_branch = "main"
 
         mock_status = MagicMock()
         mock_status.post_initial_status = AsyncMock()
@@ -511,6 +531,8 @@ class TestHandleFlow:
         mock_container = MagicMock()
         mock_container.create = AsyncMock(side_effect=RuntimeError("Docker down"))
         mock_container.destroy = AsyncMock()
+        mock_container.clone_url = "https://token@gitea.example.com/owner/repo.git"
+        mock_container.default_branch = "main"
 
         mock_status = MagicMock()
         mock_status.post_initial_status = AsyncMock()
@@ -547,6 +569,8 @@ class TestHandleFlow:
         mock_container = MagicMock()
         mock_container.create = AsyncMock()
         mock_container.destroy = AsyncMock()
+        mock_container.clone_url = "https://token@gitea.example.com/owner/repo.git"
+        mock_container.default_branch = "main"
 
         mock_status = MagicMock()
         mock_status.post_initial_status = AsyncMock()
@@ -582,6 +606,8 @@ class TestHandleFlow:
         mock_container = MagicMock()
         mock_container.create = AsyncMock()
         mock_container.destroy = AsyncMock()
+        mock_container.clone_url = "https://token@gitea.example.com/owner/repo.git"
+        mock_container.default_branch = "main"
 
         mock_status = MagicMock()
         mock_status.post_initial_status = AsyncMock(

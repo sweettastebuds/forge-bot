@@ -1,8 +1,8 @@
 """Per-event persistent container lifecycle manager.
 
 Replaces the fire-and-forget sandbox with a container that persists for the
-entire webhook event processing.  The repo is cloned on creation, and the
-handler can run arbitrary commands via ``exec()``.
+entire webhook event processing.  The container starts with an empty
+``/workspace``; the LLM decides how to clone the repo via the exec tool.
 """
 
 from __future__ import annotations
@@ -35,12 +35,16 @@ class ExecResult:
 
 
 class ContainerManager:
-    """Per-event persistent container with repo clone and exec support.
+    """Per-event persistent container with exec support.
+
+    The container starts with an empty ``/workspace``.  The LLM clones the
+    repo itself via the exec tool, choosing the right depth/flags for the
+    task at hand.
 
     Usage::
 
         async with ContainerManager(settings, clone_url, "main", token="...") as cm:
-            result = await cm.exec("git log --oneline -5")
+            result = await cm.exec("git clone ... /workspace")
             result = await cm.exec("python -m pytest tests/")
     """
 
@@ -62,6 +66,7 @@ class ContainerManager:
         self._image = image or settings.container_workspace_image
         self._docker: docker.DockerClient | None = None
         self._container: Any = None
+        self._authed_url: str = ""
 
     # -- async context manager --
 
@@ -72,25 +77,33 @@ class ContainerManager:
     async def __aexit__(self, *exc: object) -> None:
         await self.destroy()
 
+    # -- public properties --
+
+    @property
+    def clone_url(self) -> str:
+        """Authenticated clone URL (token already injected)."""
+        return self._authed_url
+
+    @property
+    def default_branch(self) -> str:
+        """Default branch from the webhook payload."""
+        return self._ref
+
     # -- lifecycle --
 
     async def create(self) -> None:
-        """Create the container, clone the repo, and wait until ready."""
+        """Create the container and wait until ready.
+
+        The container starts with an empty ``/workspace``.  The LLM is
+        responsible for cloning the repo via the exec tool.
+        """
         self._docker = await asyncio.to_thread(docker.from_env)
-
-        authed_url = self._inject_token(self._clone_url, self._token)
-
-        init_script = (
-            f"git clone --depth=50 --no-single-branch '{authed_url}' /workspace"
-            f" && cd /workspace"
-            f" && git checkout '{self._ref}'"
-            f" && echo 'FORGE_READY'"
-        )
+        self._authed_url = self._inject_token(self._clone_url, self._token)
 
         self._container = await asyncio.to_thread(
             self._docker.containers.run,
             self._image,
-            ["sh", "-c", f"{init_script} && sleep infinity"],
+            ["sh", "-c", "echo 'FORGE_READY' && sleep infinity"],
             detach=True,
             mem_limit=self._settings.sandbox_memory,
             nano_cpus=int(self._settings.sandbox_cpus * 1e9),
@@ -101,7 +114,7 @@ class ContainerManager:
             tmpfs={"/tmp": "size=200m"},
         )
 
-        logger.info("Container %s created, cloning repo...", self._container.short_id)
+        logger.info("Container %s created", self._container.short_id)
         await self._wait_for_ready(timeout=self._settings.sandbox_timeout)
         logger.info("Container %s ready", self._container.short_id)
 

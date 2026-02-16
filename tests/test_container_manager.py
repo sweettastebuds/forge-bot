@@ -74,6 +74,58 @@ class TestTokenInjection:
         assert result == url  # unchanged, no :// to split on
 
 
+class TestProperties:
+    @pytest.mark.asyncio
+    async def test_clone_url_with_token(self, settings: Settings) -> None:
+        mock_client = _make_mock_docker_client()
+        cm = ContainerManager(
+            settings,
+            "https://gitea.example.com/owner/repo.git",
+            "main",
+            token="test-token",
+        )
+
+        with patch("forge_bot.container.manager.docker") as mock_docker:
+            mock_docker.from_env.return_value = mock_client
+            await cm.create()
+
+        assert cm.clone_url == "https://test-token@gitea.example.com/owner/repo.git"
+        await cm.destroy()
+
+    @pytest.mark.asyncio
+    async def test_clone_url_without_token(self, settings: Settings) -> None:
+        mock_client = _make_mock_docker_client()
+        cm = ContainerManager(
+            settings,
+            "https://gitea.example.com/owner/repo.git",
+            "main",
+        )
+
+        with patch("forge_bot.container.manager.docker") as mock_docker:
+            mock_docker.from_env.return_value = mock_client
+            await cm.create()
+
+        assert cm.clone_url == "https://gitea.example.com/owner/repo.git"
+        await cm.destroy()
+
+    def test_default_branch(self, settings: Settings) -> None:
+        cm = ContainerManager(
+            settings,
+            "https://gitea.example.com/owner/repo.git",
+            "develop",
+        )
+        assert cm.default_branch == "develop"
+
+    def test_clone_url_empty_before_create(self, settings: Settings) -> None:
+        cm = ContainerManager(
+            settings,
+            "https://gitea.example.com/owner/repo.git",
+            "main",
+            token="test-token",
+        )
+        assert cm.clone_url == ""
+
+
 class TestCreate:
     @pytest.mark.asyncio
     async def test_creates_container(self, settings: Settings) -> None:
@@ -102,8 +154,34 @@ class TestCreate:
         await cm.destroy()
 
     @pytest.mark.asyncio
+    async def test_no_clone_in_init_script(self, settings: Settings) -> None:
+        """Container should start without cloning — LLM clones via exec."""
+        mock_container = _make_mock_container()
+        mock_client = _make_mock_docker_client(mock_container)
+
+        cm = ContainerManager(
+            settings,
+            "https://gitea.example.com/owner/repo.git",
+            "main",
+            token="test-token",
+        )
+
+        with patch("forge_bot.container.manager.docker") as mock_docker:
+            mock_docker.from_env.return_value = mock_client
+            await cm.create()
+
+        # The command passed to containers.run should NOT contain git clone
+        call_args = mock_client.containers.run.call_args
+        command = call_args[0][1]  # second positional arg is the command list
+        command_str = " ".join(command) if isinstance(command, list) else str(command)
+        assert "git clone" not in command_str
+        assert "FORGE_READY" in command_str
+
+        await cm.destroy()
+
+    @pytest.mark.asyncio
     async def test_init_timeout_raises(self, settings: Settings) -> None:
-        mock_container = _make_mock_container(logs=b"still cloning...")
+        mock_container = _make_mock_container(logs=b"still starting...")
         mock_client = _make_mock_docker_client(mock_container)
 
         cm = ContainerManager(
