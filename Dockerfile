@@ -9,7 +9,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY forge_bot/ ./forge_bot/
-COPY prompts/ ./prompts/
 
 RUN groupadd -g 999 docker-host && \
     useradd -m -u 1000 -G docker-host forgebot
