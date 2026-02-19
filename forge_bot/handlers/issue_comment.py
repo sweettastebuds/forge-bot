@@ -31,12 +31,18 @@ from forge_bot.tools.registry import ToolRegistry
 from forge_bot.tools.search_api import SearchApiTool
 from forge_bot.tools.todo import TodoTool
 
+# Smart retrieval (conditional import handled at registration time).
+_RETRIEVAL_AVAILABLE = True
+try:
+    from forge_bot.retrieval.pipeline import SmartRetriever
+    from forge_bot.retrieval.tool import RetrievalTool
+except ImportError:
+    _RETRIEVAL_AVAILABLE = False
+
 logger = logging.getLogger("forge_bot.handlers.issue_comment")
 
 _MAX_TOOL_ROUNDS = 10
-_WARNING_BANNER = (
-    "> :warning: **This response may contain inaccuracies — please verify.**\n\n"
-)
+_WARNING_BANNER = "> :warning: **This response may contain inaccuracies — please verify.**\n\n"
 
 
 class IssueCommentHandler(BaseHandler):
@@ -87,8 +93,7 @@ class IssueCommentHandler(BaseHandler):
             await status.update_phase("Error: container creation failed")
             await self._post_error_response(
                 status,
-                "I couldn't set up a workspace to analyze your request. "
-                "Please try again later.",
+                "I couldn't set up a workspace to analyze your request. Please try again later.",
             )
             if container:
                 await container.destroy()
@@ -103,6 +108,14 @@ class IssueCommentHandler(BaseHandler):
             todo_tool = TodoTool(status)
             registry.register(todo_tool)
 
+            # Register smart retrieval tool if enabled.
+            if _RETRIEVAL_AVAILABLE and self.settings.smart_retrieval_enabled:
+                retriever = SmartRetriever(
+                    self.llm,
+                    context_window=self.settings.llm_context_window,
+                )
+                registry.register(RetrievalTool(retriever))
+
             # 4. Tool-calling loop with verification
             await status.update_phase("Thinking...")
             reply, all_tool_results = await self._tool_loop(
@@ -114,16 +127,12 @@ class IssueCommentHandler(BaseHandler):
             )
 
             # 5. Pre-post verification
-            reply = await self._verify_and_maybe_retry(
-                reply, all_tool_results, event, status
-            )
+            reply = await self._verify_and_maybe_retry(reply, all_tool_results, event, status)
 
             # 6. Post response
             try:
                 await status.post_response(reply)
-                logger.info(
-                    "Posted reply on %s#%d", event.repository.full_name, issue_num
-                )
+                logger.info("Posted reply on %s#%d", event.repository.full_name, issue_num)
             except Exception:
                 logger.exception(
                     "Failed to post response on %s#%d",
@@ -135,9 +144,7 @@ class IssueCommentHandler(BaseHandler):
             await status.finalize_status("Done")
 
         except Exception:
-            logger.exception(
-                "Error processing %s#%d", event.repository.full_name, issue_num
-            )
+            logger.exception("Error processing %s#%d", event.repository.full_name, issue_num)
             await self._post_error_response(
                 status,
                 "Sorry, I encountered an error while processing your request.",
@@ -162,7 +169,8 @@ class IssueCommentHandler(BaseHandler):
         """
         user_question = event.comment.body
         system_prompt = self._build_system_prompt(
-            event, registry,
+            event,
+            registry,
             clone_url=clone_url,
             default_branch=default_branch,
         )
@@ -175,8 +183,7 @@ class IssueCommentHandler(BaseHandler):
         progress = ProgressTracker()
         all_tool_results: list[tuple[str, ToolResult]] = []
         error_reply = (
-            "Sorry, I encountered an error while generating a "
-            "response. Please try again later."
+            "Sorry, I encountered an error while generating a response. Please try again later."
         )
         fallback_reply = (
             "I looked into it but wasn't able to form a complete answer. "
@@ -247,10 +254,12 @@ class IssueCommentHandler(BaseHandler):
                 # Progress check: skip duplicates
                 if progress.is_duplicate(tool_name, args_key):
                     logger.info("Skipping duplicate tool call: %s", args_key)
-                    messages.append({
-                        "role": "assistant",
-                        "content": f"[Skipped duplicate call to {tool_name}]",
-                    })
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": f"[Skipped duplicate call to {tool_name}]",
+                        }
+                    )
                     continue
 
                 progress.record(tool_name, args_key)
@@ -259,7 +268,8 @@ class IssueCommentHandler(BaseHandler):
                 # Execute
                 logger.info(
                     "Round %d: executing %s(%s)",
-                    round_num, tool_name,
+                    round_num,
+                    tool_name,
                     abbreviate(json.dumps(tool_args), 80),
                 )
                 await status.update_phase(f"Running {tool_name}...")
@@ -271,34 +281,40 @@ class IssueCommentHandler(BaseHandler):
                 all_tool_results.append((tool_name, result))
 
                 # Record in status
-                await status.record_tool_call(ToolCallRecord(
-                    tool_name=tool_name,
-                    arguments_summary=abbreviate(
-                        json.dumps(tool_args), 60
-                    ),
-                    result_summary=abbreviate(result.content, 100),
-                    success=result.success,
-                    duration_seconds=round(duration, 2),
-                ))
+                await status.record_tool_call(
+                    ToolCallRecord(
+                        tool_name=tool_name,
+                        arguments_summary=abbreviate(json.dumps(tool_args), 60),
+                        result_summary=abbreviate(result.content, 100),
+                        success=result.success,
+                        duration_seconds=round(duration, 2),
+                    )
+                )
 
                 # Add result to messages for next LLM round
-                messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": f"call_{round_num}_{tool_name}",
-                        "type": "function",
-                        "function": {
-                            "name": tool_name,
-                            "arguments": json.dumps(tool_args),
-                        },
-                    }],
-                })
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": f"call_{round_num}_{tool_name}",
-                    "content": result.content,
-                })
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": f"call_{round_num}_{tool_name}",
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": json.dumps(tool_args),
+                                },
+                            }
+                        ],
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": f"call_{round_num}_{tool_name}",
+                        "content": result.content,
+                    }
+                )
 
             progress.record_round(had_new_calls)
 
@@ -314,14 +330,16 @@ class IssueCommentHandler(BaseHandler):
                     mismatches = check_hallucination(last_assistant, round_results)
                     for mismatch in mismatches:
                         logger.warning("Hallucination detected: %s", mismatch)
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                f"CORRECTION: {mismatch}. "
-                                "Please re-check the tool output and correct "
-                                "your response."
-                            ),
-                        })
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"CORRECTION: {mismatch}. "
+                                    "Please re-check the tool output and correct "
+                                    "your response."
+                                ),
+                            }
+                        )
 
         # Exhausted rounds — try to extract last assistant message.
         for msg in reversed(messages):
@@ -344,9 +362,7 @@ class IssueCommentHandler(BaseHandler):
         if result.passed:
             return reply
 
-        logger.warning(
-            "Pre-post verification failed: %s", "; ".join(result.failures)
-        )
+        logger.warning("Pre-post verification failed: %s", "; ".join(result.failures))
 
         # Retry: re-prompt with specific failures
         await status.update_phase("Verifying response...")
@@ -409,10 +425,12 @@ class IssueCommentHandler(BaseHandler):
                             args = json.loads(args)
                         except json.JSONDecodeError:
                             args = {"raw": args}
-                    calls.append({
-                        "name": tc.function.name,
-                        "arguments": args,
-                    })
+                    calls.append(
+                        {
+                            "name": tc.function.name,
+                            "arguments": args,
+                        }
+                    )
                 return calls
 
         # Prompt mode: parse ```tool blocks from content text
@@ -420,9 +438,7 @@ class IssueCommentHandler(BaseHandler):
             text = response.choices[0].message.content or ""
         else:
             text = str(response)
-        tool_block_re = re.compile(
-            r"```tool\s*\n(.*?)\n```", re.DOTALL
-        )
+        tool_block_re = re.compile(r"```tool\s*\n(.*?)\n```", re.DOTALL)
         blocks = tool_block_re.findall(text)
         calls = []
         for block in blocks:
@@ -441,9 +457,7 @@ class IssueCommentHandler(BaseHandler):
             return response.choices[0].message.content or ""
         return str(response)
 
-    async def _post_error_response(
-        self, status: StatusCommentManager, message: str
-    ) -> None:
+    async def _post_error_response(self, status: StatusCommentManager, message: str) -> None:
         """Post an error message and finalize the status comment."""
         try:
             await status.post_response(message)

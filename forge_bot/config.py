@@ -46,6 +46,17 @@ class Settings(BaseSettings):
         description="Allow network access in workspace containers",
     )
 
+    # --- Smart Retrieval ---
+    smart_retrieval_enabled: bool = Field(
+        default=True,
+        description="Enable the three-level smart retrieval hierarchy "
+        "(BM25 → parallel scan → multi-hop) for PR review and search",
+    )
+    smart_retrieval_max_parallel: int = Field(
+        default=10,
+        description="Max parallel LLM calls during Level-2 chunk scanning",
+    )
+
     # --- RAG (optional) ---
     rag_enabled: bool = Field(default=False)
     rag_embed_model: str = Field(default="all-MiniLM-L6-v2")

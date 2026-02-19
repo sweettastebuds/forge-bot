@@ -62,6 +62,8 @@ def _make_llm(response: str = "Looks good — no major issues found.") -> AsyncM
 def _make_settings() -> MagicMock:
     settings = MagicMock()
     settings.rag_enabled = False
+    settings.smart_retrieval_enabled = False  # disable for unit tests
+    settings.llm_context_window = 8192
     return settings
 
 

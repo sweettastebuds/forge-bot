@@ -1,4 +1,9 @@
-"""Handler for pull_request webhook events (code review)."""
+"""Handler for pull_request webhook events (code review).
+
+When smart retrieval is enabled and the diff exceeds the token budget,
+the handler uses the three-level retrieval hierarchy to review the diff
+in chunks rather than truncating it.
+"""
 
 from __future__ import annotations
 
@@ -6,10 +11,12 @@ import logging
 
 from forge_bot.handlers.base import BaseHandler
 from forge_bot.models import PullRequestEvent
+from forge_bot.retrieval.pipeline import SmartRetriever
+from forge_bot.retrieval.token_budget import estimate_tokens
 
 logger = logging.getLogger("forge_bot.handlers.pull_request")
 
-# Diffs larger than this are truncated to stay within LLM context limits.
+# Diffs larger than this are truncated in legacy (non-retrieval) mode.
 _MAX_DIFF_CHARS = 30_000
 
 
@@ -30,9 +37,7 @@ class PullRequestHandler(BaseHandler):
 
         # Fetch diff and changed file list.
         try:
-            diff_text = await self.api.call(
-                "get_pull_diff", owner=owner, repo=repo, index=pr_num
-            )
+            diff_text = await self.api.call("get_pull_diff", owner=owner, repo=repo, index=pr_num)
         except Exception:
             logger.exception(
                 "Failed to fetch diff for %s#%d",
@@ -64,42 +69,32 @@ class PullRequestHandler(BaseHandler):
         # Ensure diff_text is a string (call() may return dict for json endpoints).
         diff_text = str(diff_text)
 
-        # Truncate very large diffs to avoid exceeding LLM context.
-        if len(diff_text) > _MAX_DIFF_CHARS:
-            diff_text = diff_text[:_MAX_DIFF_CHARS] + "\n\n... (diff truncated)"
-
         # Build a concise file summary for the prompt.
         if isinstance(changed_files, list):
             file_summary = "\n".join(
-                f"- {f.get('filename', '?')} "
-                f"(+{f.get('additions', 0)}/{-f.get('deletions', 0)})"
+                f"- {f.get('filename', '?')} (+{f.get('additions', 0)}/{-f.get('deletions', 0)})"
                 for f in changed_files
             )
         else:
             file_summary = ""
 
-        # Render the system prompt from the Jinja2 template.
-        system_prompt = self.render_template(
-            "pr_review.j2",
-            repo_full_name=event.repository.full_name,
-            pr_title=event.pull_request.title,
+        # Decide: smart retrieval vs. legacy single-prompt.
+        use_retrieval = (
+            self.settings.smart_retrieval_enabled
+            and estimate_tokens(diff_text) > self.settings.llm_context_window // 2
         )
 
-        # User message = PR description + file list + diff.
-        user_message = self._build_user_message(event, file_summary, diff_text)
-
-        # Call the LLM.
-        try:
-            review = await self.llm.chat(system_prompt, user_message)
-        except Exception:
-            logger.exception(
-                "LLM call failed for PR %s#%d",
-                event.repository.full_name,
-                pr_num,
+        if use_retrieval:
+            review = await self._review_with_retrieval(
+                event,
+                diff_text,
+                file_summary,
             )
-            review = (
-                "Sorry, I encountered an error while reviewing this PR. "
-                "Please try again later."
+        else:
+            review = await self._review_legacy(
+                event,
+                diff_text,
+                file_summary,
             )
 
         # Post the review as a regular comment (inline reviews are unreliable).
@@ -111,15 +106,76 @@ class PullRequestHandler(BaseHandler):
                 index=pr_num,
                 body=review,
             )
-            logger.info(
-                "Posted review on %s#%d", event.repository.full_name, pr_num
-            )
+            logger.info("Posted review on %s#%d", event.repository.full_name, pr_num)
         except Exception:
             logger.exception(
                 "Failed to post review on %s#%d",
                 event.repository.full_name,
                 pr_num,
             )
+
+    async def _review_with_retrieval(
+        self,
+        event: PullRequestEvent,
+        diff_text: str,
+        file_summary: str,
+    ) -> str:
+        """Review using the smart retrieval hierarchy (Level 2 or 3)."""
+        pr = event.pull_request
+        question = (
+            f"Review this pull request for bugs, security issues, "
+            f"performance problems, and error handling.\n\n"
+            f"PR #{pr.number}: {pr.title}\n"
+            f"Branch: {pr.head.ref} → {pr.base.ref}\n"
+        )
+        if pr.body:
+            question += f"Description: {pr.body}\n"
+        if file_summary:
+            question += f"\nChanged files:\n{file_summary}\n"
+
+        retriever = SmartRetriever(
+            self.llm,
+            context_window=self.settings.llm_context_window,
+        )
+
+        try:
+            return await retriever.review_diff(question, diff_text)
+        except Exception:
+            logger.exception(
+                "Smart retrieval failed for PR %s#%d, falling back to legacy",
+                event.repository.full_name,
+                event.pull_request.number,
+            )
+            return await self._review_legacy(event, diff_text, file_summary)
+
+    async def _review_legacy(
+        self,
+        event: PullRequestEvent,
+        diff_text: str,
+        file_summary: str,
+    ) -> str:
+        """Legacy single-prompt review (truncates large diffs)."""
+        # Truncate very large diffs to avoid exceeding LLM context.
+        if len(diff_text) > _MAX_DIFF_CHARS:
+            diff_text = diff_text[:_MAX_DIFF_CHARS] + "\n\n... (diff truncated)"
+
+        system_prompt = self.render_template(
+            "pr_review.j2",
+            repo_full_name=event.repository.full_name,
+            pr_title=event.pull_request.title,
+        )
+
+        user_message = self._build_user_message(event, file_summary, diff_text)
+
+        try:
+            return await self.llm.chat(system_prompt, user_message)
+        except Exception:
+            logger.exception(
+                "LLM call failed for PR %s#%d",
+                event.repository.full_name,
+                event.pull_request.number,
+            )
+            return "Sorry, I encountered an error while reviewing this PR. Please try again later."
 
     @staticmethod
     def _build_user_message(
