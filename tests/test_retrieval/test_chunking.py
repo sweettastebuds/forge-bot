@@ -76,11 +76,7 @@ def test_chunk_diff_by_file_empty():
 
 
 def test_chunk_diff_by_file_single():
-    diff = (
-        "diff --git a/only.py b/only.py\n"
-        "+++ b/only.py\n"
-        "+first line\n"
-    )
+    diff = "diff --git a/only.py b/only.py\n+++ b/only.py\n+first line\n"
     chunks = chunk_diff_by_file(diff)
     assert len(chunks) == 1
     assert chunks[0].source == "only.py"

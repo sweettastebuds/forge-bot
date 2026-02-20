@@ -40,9 +40,13 @@ def _make_api(
                 raise diff_error
             return diff
         if endpoint_name == "get_pull_files":
-            return files if files is not None else [
-                {"filename": "server.py", "additions": 1, "deletions": 0},
-            ]
+            return (
+                files
+                if files is not None
+                else [
+                    {"filename": "server.py", "additions": 1, "deletions": 0},
+                ]
+            )
         if endpoint_name == "post_issue_comment":
             if post_error:
                 raise post_error
@@ -59,10 +63,11 @@ def _make_llm(response: str = "Looks good — no major issues found.") -> AsyncM
     return llm
 
 
-def _make_settings() -> MagicMock:
+def _make_settings(*, smart_retrieval: bool = False) -> MagicMock:
     settings = MagicMock()
     settings.rag_enabled = False
-    settings.smart_retrieval_enabled = False  # disable for unit tests
+    settings.smart_retrieval_enabled = smart_retrieval
+    settings.smart_retrieval_max_parallel = 10
     settings.llm_context_window = 8192
     return settings
 
@@ -142,10 +147,7 @@ async def test_handle_posts_error_on_llm_failure(
     await handler.handle(pr_event)
 
     # Should have posted an error comment
-    post_calls = [
-        c for c in api.call.call_args_list
-        if c.args[0] == "post_issue_comment"
-    ]
+    post_calls = [c for c in api.call.call_args_list if c.args[0] == "post_issue_comment"]
     assert len(post_calls) == 1
     assert "error" in post_calls[0].kwargs["body"].lower()
 
@@ -185,3 +187,78 @@ async def test_build_user_message_without_description(
 
     user_message = llm.chat.call_args.args[1]
     assert "Description" not in user_message
+
+
+async def test_smart_retrieval_used_for_large_diff(
+    pr_event: PullRequestEvent,
+    monkeypatch,
+):
+    """When smart_retrieval is enabled and the diff is large, the handler
+    should call SmartRetriever.review_diff instead of llm.chat."""
+    # Diff big enough to exceed context_window // 2 (8192 // 2 = 4096 tokens ≈ 16384 chars)
+    large_diff = "diff --git a/big.py b/big.py\n" + "+x\n" * 20_000
+    api = _make_api(diff=large_diff)
+    llm = _make_llm()
+    settings = _make_settings(smart_retrieval=True)
+
+    mock_review_diff = AsyncMock(return_value="Smart review result")
+    monkeypatch.setattr(
+        "forge_bot.handlers.pull_request.SmartRetriever.review_diff",
+        mock_review_diff,
+    )
+
+    handler = PullRequestHandler(api, llm, settings, "forge-bot")
+    await handler.handle(pr_event)
+
+    # SmartRetriever.review_diff should have been called
+    mock_review_diff.assert_awaited_once()
+    # Legacy llm.chat should NOT have been called
+    llm.chat.assert_not_awaited()
+
+    # The review should have been posted
+    post_calls = [c for c in api.call.call_args_list if c.args[0] == "post_issue_comment"]
+    assert len(post_calls) == 1
+    assert post_calls[0].kwargs["body"] == "Smart review result"
+
+
+async def test_smart_retrieval_not_used_for_small_diff(
+    pr_event: PullRequestEvent,
+):
+    """When smart_retrieval is enabled but the diff is small, the handler
+    should use the legacy llm.chat path (no retrieval overhead)."""
+    api = _make_api()  # SAMPLE_DIFF is tiny
+    llm = _make_llm()
+    settings = _make_settings(smart_retrieval=True)
+
+    handler = PullRequestHandler(api, llm, settings, "forge-bot")
+    await handler.handle(pr_event)
+
+    # Legacy llm.chat should have been called directly
+    llm.chat.assert_awaited_once()
+
+
+async def test_smart_retrieval_falls_back_on_failure(
+    pr_event: PullRequestEvent,
+    monkeypatch,
+):
+    """If SmartRetriever.review_diff raises, the handler should fall back
+    to the legacy path and still post a review."""
+    large_diff = "diff --git a/big.py b/big.py\n" + "+x\n" * 20_000
+    api = _make_api(diff=large_diff)
+    llm = _make_llm("Fallback legacy review")
+    settings = _make_settings(smart_retrieval=True)
+
+    mock_review_diff = AsyncMock(side_effect=RuntimeError("retrieval broke"))
+    monkeypatch.setattr(
+        "forge_bot.handlers.pull_request.SmartRetriever.review_diff",
+        mock_review_diff,
+    )
+
+    handler = PullRequestHandler(api, llm, settings, "forge-bot")
+    await handler.handle(pr_event)
+
+    # Should have fallen back to legacy llm.chat
+    llm.chat.assert_awaited_once()
+    post_calls = [c for c in api.call.call_args_list if c.args[0] == "post_issue_comment"]
+    assert len(post_calls) == 1
+    assert post_calls[0].kwargs["body"] == "Fallback legacy review"

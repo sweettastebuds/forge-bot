@@ -30,11 +30,15 @@ class SmartRetriever:
         self,
         llm: LLMClient,
         context_window: int = 8192,
+        *,
+        max_parallel: int = 10,
     ) -> None:
         self._llm = llm
         self._context_window = context_window
+        self._max_parallel = max_parallel
 
     def _make_budget(self) -> TokenBudget:
+        """Create a fresh budget for each retrieval operation."""
         return TokenBudget(context_window=self._context_window)
 
     # -- Level 1: fast keyword search --------------------------------------
@@ -77,7 +81,7 @@ class SmartRetriever:
         Best for: thorough analysis where you can't miss anything.
         """
         budget = self._make_budget()
-        scanner = Level2Scanner(self._llm, budget)
+        scanner = Level2Scanner(self._llm, budget, max_parallel=self._max_parallel)
         return await scanner.retrieve_and_answer(query, text, source=source)
 
     # -- Level 3: multi-hop reasoning --------------------------------------
@@ -95,9 +99,13 @@ class SmartRetriever:
         Returns the synthesized answer.
         Best for: complex questions spanning multiple files/contexts.
         """
-        budget = self._make_budget()
-        scanner = Level2Scanner(self._llm, budget)
-        agent = Level3Agent(self._llm, scanner, budget)
+        # Each Level-2 invocation inside Level-3 gets its own fresh budget
+        # so that one hop's consumption doesn't starve subsequent hops.
+        agent = Level3Agent(
+            self._llm,
+            budget_factory=self._make_budget,
+            max_parallel=self._max_parallel,
+        )
         docs = [SourceDocument(name=n, content=c) for n, c in sources.items()]
         return await agent.answer(question, docs)
 
@@ -137,7 +145,7 @@ class SmartRetriever:
                 "Diff fits in budget (%d tokens), using Level 2",
                 diff_tokens,
             )
-            scanner = Level2Scanner(self._llm, budget)
+            scanner = Level2Scanner(self._llm, budget, max_parallel=self._max_parallel)
             return await scanner.retrieve_and_answer(
                 question,
                 diff_text,

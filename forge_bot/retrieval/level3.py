@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -91,19 +92,23 @@ class HopRecord:
 
 
 class Level3Agent:
-    """Multi-hop reasoning agent that decomposes questions into sub-queries."""
+    """Multi-hop reasoning agent that decomposes questions into sub-queries.
+
+    Each hop creates a fresh ``Level2Scanner`` with its own ``TokenBudget``
+    so that one hop's token consumption does not starve subsequent hops.
+    """
 
     def __init__(
         self,
         llm: LLMClient,
-        scanner: Level2Scanner,
-        budget: TokenBudget,
+        budget_factory: Callable[[], TokenBudget],
         *,
+        max_parallel: int = 10,
         max_hops: int = _MAX_HOPS,
     ) -> None:
         self._llm = llm
-        self._scanner = scanner
-        self._budget = budget
+        self._budget_factory = budget_factory
+        self._max_parallel = max_parallel
         self._max_hops = max_hops
 
     async def answer(
@@ -187,7 +192,12 @@ class Level3Agent:
                         source_name,
                         sub_question[:80],
                     )
-                    tool_result = await self._scanner.retrieve_and_answer(
+                    # Fresh budget per hop so consumption doesn't carry over.
+                    hop_budget = self._budget_factory()
+                    hop_scanner = Level2Scanner(
+                        self._llm, hop_budget, max_parallel=self._max_parallel
+                    )
+                    tool_result = await hop_scanner.retrieve_and_answer(
                         sub_question,
                         source_doc.content,
                         source=source_name,

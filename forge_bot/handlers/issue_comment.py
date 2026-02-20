@@ -31,13 +31,18 @@ from forge_bot.tools.registry import ToolRegistry
 from forge_bot.tools.search_api import SearchApiTool
 from forge_bot.tools.todo import TodoTool
 
-# Smart retrieval (conditional import handled at registration time).
+# Smart retrieval — always available (no optional deps), but guarded
+# so a broken import surfaces as a warning rather than crashing the handler.
 _RETRIEVAL_AVAILABLE = True
 try:
     from forge_bot.retrieval.pipeline import SmartRetriever
     from forge_bot.retrieval.tool import RetrievalTool
-except ImportError:
+except Exception:  # noqa: BLE001
     _RETRIEVAL_AVAILABLE = False
+    logging.getLogger(__name__).warning(
+        "Smart retrieval import failed — tool will be unavailable",
+        exc_info=True,
+    )
 
 logger = logging.getLogger("forge_bot.handlers.issue_comment")
 
@@ -113,6 +118,7 @@ class IssueCommentHandler(BaseHandler):
                 retriever = SmartRetriever(
                     self.llm,
                     context_window=self.settings.llm_context_window,
+                    max_parallel=self.settings.smart_retrieval_max_parallel,
                 )
                 registry.register(RetrievalTool(retriever))
 
@@ -374,8 +380,9 @@ class IssueCommentHandler(BaseHandler):
 
         try:
             retry = await self.llm.chat(
+                "You are correcting a response before it is posted. "
+                "Fix the issues listed below and return the corrected response.",
                 f"Original response:\n{reply}\n\n{correction}",
-                event.comment.body,
             )
             retry_result = verify_response(str(retry), all_tool_results)
             if retry_result.passed:

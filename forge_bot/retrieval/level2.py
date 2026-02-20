@@ -18,10 +18,7 @@ import logging
 from forge_bot.clients.llm import LLMClient
 from forge_bot.retrieval.bm25 import BM25Index, _tokenize
 from forge_bot.retrieval.chunking import Chunk, chunk_text
-from forge_bot.retrieval.token_budget import (
-    TokenBudget,
-    truncate_to_tokens,
-)
+from forge_bot.retrieval.token_budget import TokenBudget, truncate_to_tokens
 
 logger = logging.getLogger("forge_bot.retrieval.level2")
 
@@ -131,7 +128,13 @@ class Level2Scanner:
         query: str,
         chunks: list[Chunk],
     ) -> list[str]:
-        """Send each chunk to the LLM in parallel for relevance filtering."""
+        """Send each chunk to the LLM in parallel for relevance filtering.
+
+        Note: LLMClient has its own concurrency semaphore (llm_max_concurrent,
+        default 3).  This semaphore caps how many tasks we *launch*, while
+        the LLM client's semaphore gates actual API calls.  Effective
+        concurrency is min(max_parallel, llm_max_concurrent).
+        """
         sem = asyncio.Semaphore(self._max_parallel)
 
         async def _check_one(chunk: Chunk) -> str | None:

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
-import pytest
-
 from forge_bot.retrieval.chunking import Chunk
 from forge_bot.retrieval.level1 import Level1Retriever
 from forge_bot.retrieval.token_budget import TokenBudget
@@ -61,8 +59,7 @@ async def test_retrieve_respects_budget():
 
     # Create many large chunks
     chunks = [
-        Chunk(content="x" * 2000, source=f"big_{i}.py", index=i, token_count=500)
-        for i in range(10)
+        Chunk(content="x" * 2000, source=f"big_{i}.py", index=i, token_count=500) for i in range(10)
     ]
     result = await retriever.retrieve("find something", chunks)
     assert result.total_tokens <= budget.available + 500  # at most one over

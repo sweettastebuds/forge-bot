@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
-import pytest
-
 from forge_bot.retrieval.pipeline import SmartRetriever
 
 

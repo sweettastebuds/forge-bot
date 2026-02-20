@@ -79,6 +79,8 @@ class PullRequestHandler(BaseHandler):
             file_summary = ""
 
         # Decide: smart retrieval vs. legacy single-prompt.
+        # estimate_tokens uses chars/4 — a rough heuristic. The threshold
+        # at context_window/2 leaves room for the system prompt + response.
         use_retrieval = (
             self.settings.smart_retrieval_enabled
             and estimate_tokens(diff_text) > self.settings.llm_context_window // 2
@@ -136,6 +138,7 @@ class PullRequestHandler(BaseHandler):
         retriever = SmartRetriever(
             self.llm,
             context_window=self.settings.llm_context_window,
+            max_parallel=self.settings.smart_retrieval_max_parallel,
         )
 
         try:
