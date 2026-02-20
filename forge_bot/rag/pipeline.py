@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from forge_bot.clients.forge import ForgeClient
+    from forge_bot.api.client import GenericForgeClient
     from forge_bot.config import Settings
 
 logger = logging.getLogger("forge_bot.rag.pipeline")
@@ -15,9 +15,9 @@ logger = logging.getLogger("forge_bot.rag.pipeline")
 class RAGPipeline:
     """Orchestrate the full RAG workflow with lazy initialization."""
 
-    def __init__(self, settings: Settings, forge: ForgeClient) -> None:
+    def __init__(self, settings: Settings, api_client: GenericForgeClient) -> None:
         self._settings = settings
-        self._forge = forge
+        self._api = api_client
         self._chunker = None
         self._embedder = None
         self._store = None
@@ -40,7 +40,7 @@ class RAGPipeline:
         self._embedder = Embedder(self._settings)
         self._store = VectorStore(self._settings.rag_store_path)
         self._ingester = Ingester(
-            self._forge, self._chunker, self._embedder, self._store,
+            self._api, self._chunker, self._embedder, self._store,
         )
         logger.info("RAG pipeline initialized")
 

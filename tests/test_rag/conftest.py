@@ -28,41 +28,49 @@ def settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
     return Settings()
 
 
+_DEFAULT_TREE = [
+    {"path": "README.md", "type": "blob"},
+    {"path": "src/main.py", "type": "blob"},
+    {"path": "src/utils.py", "type": "blob"},
+    {"path": "tests/test_main.py", "type": "blob"},
+    {"path": "vendor/lib.js", "type": "blob"},
+    {"path": "image.png", "type": "blob"},
+]
+
+_DEFAULT_FILES = {
+    "README.md": "# My Project\nA sample project.",
+    "src/main.py": (
+        "def hello():\n    print('hello world')\n\n"
+        "def goodbye():\n    print('goodbye')\n"
+    ),
+    "src/utils.py": (
+        "def add(a, b):\n    return a + b\n\n"
+        "def multiply(a, b):\n    return a * b\n"
+    ),
+    "tests/test_main.py": (
+        "from src.main import hello\n\n"
+        "def test_hello():\n    hello()\n"
+    ),
+}
+
+
 @pytest.fixture()
-def mock_forge() -> AsyncMock:
-    """Mocked ForgeClient."""
-    forge = AsyncMock()
-    forge.get_repo_tree.return_value = [
-        {"path": "README.md", "type": "blob"},
-        {"path": "src/main.py", "type": "blob"},
-        {"path": "src/utils.py", "type": "blob"},
-        {"path": "tests/test_main.py", "type": "blob"},
-        {"path": "vendor/lib.js", "type": "blob"},
-        {"path": "image.png", "type": "blob"},
-    ]
+def mock_api_client() -> AsyncMock:
+    """Mocked GenericForgeClient using call() dispatch."""
+    client = AsyncMock()
 
-    async def _get_file(owner, repo, path, ref="main"):
-        files = {
-            "README.md": "# My Project\nA sample project.",
-            "src/main.py": (
-                "def hello():\n    print('hello world')\n\n"
-                "def goodbye():\n    print('goodbye')\n"
-            ),
-            "src/utils.py": (
-                "def add(a, b):\n    return a + b\n\n"
-                "def multiply(a, b):\n    return a * b\n"
-            ),
-            "tests/test_main.py": (
-                "from src.main import hello\n\n"
-                "def test_hello():\n    hello()\n"
-            ),
-        }
-        if path in files:
-            return files[path]
-        raise Exception(f"File not found: {path}")
+    async def _call(endpoint_name, **params):
+        if endpoint_name == "get_repo_tree":
+            return {"tree": list(_DEFAULT_TREE)}
+        elif endpoint_name == "get_file_content":
+            filepath = params.get("filepath", "")
+            if filepath in _DEFAULT_FILES:
+                return _DEFAULT_FILES[filepath]
+            raise Exception(f"File not found: {filepath}")
+        raise ValueError(f"Unmocked endpoint: {endpoint_name}")
 
-    forge.get_file_content.side_effect = _get_file
-    return forge
+    client.call = AsyncMock(side_effect=_call)
+    return client
 
 
 @pytest.fixture()

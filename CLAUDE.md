@@ -55,7 +55,6 @@ forge_bot/
       gitea.yaml    — ~20 Gitea API endpoint definitions
       forgejo.yaml  — ~20 Forgejo API endpoint definitions
   clients/
-    forge.py      — ForgeClient (DEPRECATED: replaced by GenericForgeClient in api/)
     llm.py        — LLMClient: AsyncOpenAI wrapper, chat() + chat_with_tools(), Semaphore concurrency
   container/
     manager.py    — ContainerManager: per-event persistent containers, exec support, async context mgr
@@ -243,7 +242,6 @@ tests/
   test_api_client.py            — GenericForgeClient calls and search
   test_api_loader.py            — YAML definition loading
   test_api_schema.py            — Schema validation
-  test_forge_client.py          — ForgeClient (deprecated)
   test_llm_client.py            — LLM chat and tool calling
   test_pull_request_handler.py  — PR review handler
   test_issue_comment_handler.py — Tool-calling loop, verification
