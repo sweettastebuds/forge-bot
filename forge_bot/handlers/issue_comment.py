@@ -121,7 +121,7 @@ class IssueCommentHandler(BaseHandler):
                     context_window=self.settings.llm_context_window,
                     max_parallel=self.settings.smart_retrieval_max_parallel,
                 )
-                registry.register(RetrievalTool(retriever))
+                registry.register(RetrievalTool(retriever, container))
 
             # 4. Tool-calling loop with verification
             await status.update_phase("Thinking...")
