@@ -113,8 +113,9 @@ class IssueCommentHandler(BaseHandler):
             todo_tool = TodoTool(status)
             registry.register(todo_tool)
 
-            # Register smart retrieval tool if enabled.
-            if _RETRIEVAL_AVAILABLE and self.settings.smart_retrieval_enabled:
+            # Register smart retrieval tool when available — the LLM
+            # dynamically decides whether to invoke it per request.
+            if _RETRIEVAL_AVAILABLE:
                 retriever = SmartRetriever(
                     self.llm,
                     context_window=self.settings.llm_context_window,

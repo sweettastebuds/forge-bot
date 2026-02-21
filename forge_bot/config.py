@@ -47,11 +47,6 @@ class Settings(BaseSettings):
     )
 
     # --- Smart Retrieval ---
-    smart_retrieval_enabled: bool = Field(
-        default=True,
-        description="Enable the three-level smart retrieval hierarchy "
-        "(BM25 → parallel scan → multi-hop) for PR review and search",
-    )
     smart_retrieval_max_parallel: int = Field(
         default=10,
         description="Max parallel LLM calls during Level-2 chunk scanning",

@@ -1,8 +1,8 @@
 """Handler for pull_request webhook events (code review).
 
-When smart retrieval is enabled and the diff exceeds the token budget,
-the handler uses the three-level retrieval hierarchy to review the diff
-in chunks rather than truncating it.
+When the diff exceeds the token budget, the handler dynamically switches
+to the three-level retrieval hierarchy to review the diff in chunks
+rather than truncating it.
 """
 
 from __future__ import annotations
@@ -81,9 +81,10 @@ class PullRequestHandler(BaseHandler):
         # Decide: smart retrieval vs. legacy single-prompt.
         # estimate_tokens uses chars/4 — a rough heuristic. The threshold
         # at context_window/2 leaves room for the system prompt + response.
+        # Dynamically switch to retrieval when the diff is too large
+        # to fit comfortably alongside the system prompt + response.
         use_retrieval = (
-            self.settings.smart_retrieval_enabled
-            and estimate_tokens(diff_text) > self.settings.llm_context_window // 2
+            estimate_tokens(diff_text) > self.settings.llm_context_window // 2
         )
 
         if use_retrieval:

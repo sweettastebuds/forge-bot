@@ -63,10 +63,9 @@ def _make_llm(response: str = "Looks good — no major issues found.") -> AsyncM
     return llm
 
 
-def _make_settings(*, smart_retrieval: bool = False) -> MagicMock:
+def _make_settings() -> MagicMock:
     settings = MagicMock()
     settings.rag_enabled = False
-    settings.smart_retrieval_enabled = smart_retrieval
     settings.smart_retrieval_max_parallel = 10
     settings.llm_context_window = 8192
     return settings
@@ -193,13 +192,13 @@ async def test_smart_retrieval_used_for_large_diff(
     pr_event: PullRequestEvent,
     monkeypatch,
 ):
-    """When smart_retrieval is enabled and the diff is large, the handler
-    should call SmartRetriever.review_diff instead of llm.chat."""
+    """When the diff exceeds the token budget, the handler dynamically
+    switches to SmartRetriever.review_diff instead of llm.chat."""
     # Diff big enough to exceed context_window // 2 (8192 // 2 = 4096 tokens ≈ 16384 chars)
     large_diff = "diff --git a/big.py b/big.py\n" + "+x\n" * 20_000
     api = _make_api(diff=large_diff)
     llm = _make_llm()
-    settings = _make_settings(smart_retrieval=True)
+    settings = _make_settings()
 
     mock_review_diff = AsyncMock(return_value="Smart review result")
     monkeypatch.setattr(
@@ -224,11 +223,11 @@ async def test_smart_retrieval_used_for_large_diff(
 async def test_smart_retrieval_not_used_for_small_diff(
     pr_event: PullRequestEvent,
 ):
-    """When smart_retrieval is enabled but the diff is small, the handler
-    should use the legacy llm.chat path (no retrieval overhead)."""
+    """When the diff is small enough to fit in context, the handler uses
+    the legacy llm.chat path (no retrieval overhead)."""
     api = _make_api()  # SAMPLE_DIFF is tiny
     llm = _make_llm()
-    settings = _make_settings(smart_retrieval=True)
+    settings = _make_settings()
 
     handler = PullRequestHandler(api, llm, settings, "forge-bot")
     await handler.handle(pr_event)
@@ -246,7 +245,7 @@ async def test_smart_retrieval_falls_back_on_failure(
     large_diff = "diff --git a/big.py b/big.py\n" + "+x\n" * 20_000
     api = _make_api(diff=large_diff)
     llm = _make_llm("Fallback legacy review")
-    settings = _make_settings(smart_retrieval=True)
+    settings = _make_settings()
 
     mock_review_diff = AsyncMock(side_effect=RuntimeError("retrieval broke"))
     monkeypatch.setattr(
