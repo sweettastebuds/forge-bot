@@ -1,31 +1,51 @@
 """Handler for pull_request webhook events (code review).
 
-When the diff exceeds the token budget, the handler dynamically switches
-to the three-level retrieval hierarchy to review the diff in chunks
-rather than truncating it.
+Uses the same container + tool-calling loop as the issue comment handler.
+The LLM receives the diff in the user message and can use tools (exec,
+smart_search, api_call) for deeper analysis and cross-referencing.
 """
 
 from __future__ import annotations
 
 import logging
 
+from forge_bot.container.manager import ContainerManager
 from forge_bot.handlers.base import BaseHandler
 from forge_bot.models import PullRequestEvent
-from forge_bot.retrieval.pipeline import SmartRetriever
-from forge_bot.retrieval.token_budget import estimate_tokens
+from forge_bot.status.manager import StatusCommentManager
+from forge_bot.tools.api_call import ApiCallTool
+from forge_bot.tools.exec_tool import ExecTool
+from forge_bot.tools.registry import ToolRegistry
+from forge_bot.tools.search_api import SearchApiTool
+from forge_bot.tools.todo import TodoTool
+
+# Smart retrieval — always available, guarded import.
+_RETRIEVAL_AVAILABLE = True
+try:
+    from forge_bot.retrieval.pipeline import SmartRetriever
+    from forge_bot.retrieval.tool import RetrievalTool
+except Exception:  # noqa: BLE001
+    _RETRIEVAL_AVAILABLE = False
+    logging.getLogger(__name__).warning(
+        "Smart retrieval import failed — tool will be unavailable",
+        exc_info=True,
+    )
 
 logger = logging.getLogger("forge_bot.handlers.pull_request")
 
-# Diffs larger than this are truncated in legacy (non-retrieval) mode.
-_MAX_DIFF_CHARS = 30_000
+# Diffs larger than this are truncated in the user message.  The LLM
+# can always fetch the full diff via tools.
+_MAX_DIFF_CHARS = 60_000
 
 
 class PullRequestHandler(BaseHandler):
-    """Review PRs on opened/synchronized by posting an LLM-generated summary."""
+    """Review PRs on opened/synchronized via the tool-calling loop."""
 
     async def handle(self, event: PullRequestEvent) -> None:
         owner, repo = event.repository.full_name.split("/", 1)
         pr_num = event.pull_request.number
+        default_branch = event.repository.default_branch
+        clone_url = event.repository.clone_url
 
         logger.info(
             "Reviewing PR %s#%d (%s) by %s",
@@ -37,7 +57,9 @@ class PullRequestHandler(BaseHandler):
 
         # Fetch diff and changed file list.
         try:
-            diff_text = await self.api.call("get_pull_diff", owner=owner, repo=repo, index=pr_num)
+            diff_text = await self.api.call(
+                "get_pull_diff", owner=owner, repo=repo, index=pr_num,
+            )
         except Exception:
             logger.exception(
                 "Failed to fetch diff for %s#%d",
@@ -48,7 +70,7 @@ class PullRequestHandler(BaseHandler):
 
         try:
             changed_files = await self.api.call(
-                "get_pull_files", owner=owner, repo=repo, index=pr_num
+                "get_pull_files", owner=owner, repo=repo, index=pr_num,
             )
         except Exception:
             logger.exception(
@@ -66,120 +88,139 @@ class PullRequestHandler(BaseHandler):
             )
             return
 
-        # Ensure diff_text is a string (call() may return dict for json endpoints).
+        # Ensure diff_text is a string.
         diff_text = str(diff_text)
 
         # Build a concise file summary for the prompt.
         if isinstance(changed_files, list):
             file_summary = "\n".join(
-                f"- {f.get('filename', '?')} (+{f.get('additions', 0)}/{-f.get('deletions', 0)})"
+                f"- {f.get('filename', '?')} "
+                f"(+{f.get('additions', 0)}/{-f.get('deletions', 0)})"
                 for f in changed_files
             )
         else:
             file_summary = ""
 
-        # Decide: smart retrieval vs. legacy single-prompt.
-        # estimate_tokens uses chars/4 — a rough heuristic. The threshold
-        # at context_window/2 leaves room for the system prompt + response.
-        # Dynamically switch to retrieval when the diff is too large
-        # to fit comfortably alongside the system prompt + response.
-        use_retrieval = (
-            estimate_tokens(diff_text) > self.settings.llm_context_window // 2
-        )
-
-        if use_retrieval:
-            review = await self._review_with_retrieval(
-                event,
-                diff_text,
-                file_summary,
-            )
-        else:
-            review = await self._review_legacy(
-                event,
-                diff_text,
-                file_summary,
-            )
-
-        # Post the review as a regular comment (inline reviews are unreliable).
+        # Post status comment.
+        status = StatusCommentManager(self.api, owner, repo, pr_num)
         try:
-            await self.api.call(
-                "post_issue_comment",
-                owner=owner,
-                repo=repo,
-                index=pr_num,
-                body=review,
+            await status.post_initial_status()
+        except Exception:
+            logger.warning("Failed to post initial status comment", exc_info=True)
+
+        # Create workspace container.
+        container: ContainerManager | None = None
+        try:
+            await status.update_phase("Starting workspace...")
+            container = ContainerManager(
+                self.settings,
+                clone_url,
+                default_branch,
+                token=self.settings.forge_api_token,
+                network_enabled=self.settings.container_network_enabled,
             )
-            logger.info("Posted review on %s#%d", event.repository.full_name, pr_num)
+            await container.create()
+        except Exception:
+            logger.exception("Failed to create workspace container")
+            await self._post_error_response(
+                status,
+                "I couldn't set up a workspace to review this PR. "
+                "Please try again later.",
+            )
+            if container:
+                await container.destroy()
+            return
+
+        try:
+            # Register tools.
+            registry = ToolRegistry()
+            registry.register(SearchApiTool(self.api))
+            registry.register(ApiCallTool(self.api, owner=owner, repo=repo))
+            registry.register(ExecTool(container))
+            registry.register(TodoTool(status))
+
+            if _RETRIEVAL_AVAILABLE:
+                retriever = SmartRetriever(
+                    self.llm,
+                    context_window=self.settings.llm_context_window,
+                    max_parallel=self.settings.smart_retrieval_max_parallel,
+                )
+                registry.register(RetrievalTool(retriever, container))
+
+            # Build prompts and run tool loop.
+            system_prompt = self._build_system_prompt(
+                event,
+                registry,
+                clone_url=container.clone_url,
+                default_branch=default_branch,
+            )
+            user_message = self._build_user_message(
+                event, file_summary, diff_text,
+            )
+
+            await status.update_phase("Reviewing PR...")
+            review, all_tool_results = await self._tool_loop(
+                system_prompt=system_prompt,
+                user_message=user_message,
+                registry=registry,
+                status=status,
+            )
+
+            # Pre-post verification.
+            review = await self._verify_and_maybe_retry(
+                review, all_tool_results, status,
+            )
+
+            # Post the review.
+            try:
+                await status.post_response(review)
+                logger.info(
+                    "Posted review on %s#%d",
+                    event.repository.full_name,
+                    pr_num,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to post review on %s#%d",
+                    event.repository.full_name,
+                    pr_num,
+                )
+
+            await status.finalize_status("Done")
+
         except Exception:
             logger.exception(
-                "Failed to post review on %s#%d",
+                "Error reviewing %s#%d",
                 event.repository.full_name,
                 pr_num,
             )
-
-    async def _review_with_retrieval(
-        self,
-        event: PullRequestEvent,
-        diff_text: str,
-        file_summary: str,
-    ) -> str:
-        """Review using the smart retrieval hierarchy (Level 2 or 3)."""
-        pr = event.pull_request
-        question = (
-            f"Review this pull request for bugs, security issues, "
-            f"performance problems, and error handling.\n\n"
-            f"PR #{pr.number}: {pr.title}\n"
-            f"Branch: {pr.head.ref} → {pr.base.ref}\n"
-        )
-        if pr.body:
-            question += f"Description: {pr.body}\n"
-        if file_summary:
-            question += f"\nChanged files:\n{file_summary}\n"
-
-        retriever = SmartRetriever(
-            self.llm,
-            context_window=self.settings.llm_context_window,
-            max_parallel=self.settings.smart_retrieval_max_parallel,
-        )
-
-        try:
-            return await retriever.review_diff(question, diff_text)
-        except Exception:
-            logger.exception(
-                "Smart retrieval failed for PR %s#%d, falling back to legacy",
-                event.repository.full_name,
-                event.pull_request.number,
+            await self._post_error_response(
+                status,
+                "Sorry, I encountered an error while reviewing this PR.",
             )
-            return await self._review_legacy(event, diff_text, file_summary)
+        finally:
+            await container.destroy()
 
-    async def _review_legacy(
+    # -- Helpers --
+
+    def _build_system_prompt(
         self,
         event: PullRequestEvent,
-        diff_text: str,
-        file_summary: str,
+        registry: ToolRegistry,
+        *,
+        clone_url: str,
+        default_branch: str,
     ) -> str:
-        """Legacy single-prompt review (truncates large diffs)."""
-        # Truncate very large diffs to avoid exceeding LLM context.
-        if len(diff_text) > _MAX_DIFF_CHARS:
-            diff_text = diff_text[:_MAX_DIFF_CHARS] + "\n\n... (diff truncated)"
-
-        system_prompt = self.render_template(
-            "pr_review.j2",
+        return self.render_template(
+            "pr_review_tools.j2",
             repo_full_name=event.repository.full_name,
+            pr_number=event.pull_request.number,
             pr_title=event.pull_request.title,
+            bot_username=self.bot_username,
+            tool_descriptions=registry.prompt_text(),
+            clone_url=clone_url,
+            default_branch=default_branch,
         )
-
-        user_message = self._build_user_message(event, file_summary, diff_text)
-
-        try:
-            return await self.llm.chat(system_prompt, user_message)
-        except Exception:
-            logger.exception(
-                "LLM call failed for PR %s#%d",
-                event.repository.full_name,
-                event.pull_request.number,
-            )
-            return "Sorry, I encountered an error while reviewing this PR. Please try again later."
 
     @staticmethod
     def _build_user_message(
@@ -196,5 +237,19 @@ class PullRequestHandler(BaseHandler):
             parts.append(f"\n**Description:**\n{pr.body}")
         if file_summary:
             parts.append(f"\n**Changed files:**\n{file_summary}")
-        parts.append(f"\n**Diff:**\n```diff\n{diff_text}\n```")
+
+        if len(diff_text) > _MAX_DIFF_CHARS:
+            truncated = diff_text[:_MAX_DIFF_CHARS]
+            parts.append(
+                f"\n**Diff (truncated — use tools to view full diff):**"
+                f"\n```diff\n{truncated}\n```"
+            )
+            parts.append(
+                "\n> The diff was truncated. Clone the repo and run "
+                "`git diff origin/main` to see the full diff, "
+                "or use `smart_search` to analyze specific parts."
+            )
+        else:
+            parts.append(f"\n**Diff:**\n```diff\n{diff_text}\n```")
+
         return "\n".join(parts)

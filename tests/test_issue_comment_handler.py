@@ -229,9 +229,10 @@ class TestToolLoop:
         registry.register(SearchApiTool(api))
 
         reply, results = await handler._tool_loop(
-            event=event, registry=registry, status=status,
-            clone_url="https://token@gitea.example.com/owner/repo.git",
-            default_branch="main",
+            system_prompt="You are a helpful assistant.",
+            user_message=event.comment.body,
+            registry=registry,
+            status=status,
         )
         assert reply == "This repo is a webhook bot."
         assert results == []
@@ -262,9 +263,10 @@ class TestToolLoop:
         registry.register(SearchApiTool(api))
 
         reply, results = await handler._tool_loop(
-            event=event, registry=registry, status=status,
-            clone_url="https://token@gitea.example.com/owner/repo.git",
-            default_branch="main",
+            system_prompt="You are a helpful assistant.",
+            user_message=event.comment.body,
+            registry=registry,
+            status=status,
         )
         assert reply == "I found some file endpoints."
         assert len(results) == 1
@@ -290,9 +292,10 @@ class TestToolLoop:
         registry.register(SearchApiTool(api))
 
         reply, results = await handler._tool_loop(
-            event=event, registry=registry, status=status,
-            clone_url="https://token@gitea.example.com/owner/repo.git",
-            default_branch="main",
+            system_prompt="You are a helpful assistant.",
+            user_message=event.comment.body,
+            registry=registry,
+            status=status,
         )
         assert reply == "Fallback answer"
 
@@ -316,9 +319,10 @@ class TestToolLoop:
         registry.register(SearchApiTool(api))
 
         reply, results = await handler._tool_loop(
-            event=event, registry=registry, status=status,
-            clone_url="https://token@gitea.example.com/owner/repo.git",
-            default_branch="main",
+            system_prompt="You are a helpful assistant.",
+            user_message=event.comment.body,
+            registry=registry,
+            status=status,
         )
         assert "error" in reply.lower()
 
@@ -349,9 +353,10 @@ class TestToolLoop:
         registry.register(SearchApiTool(api))
 
         reply, results = await handler._tool_loop(
-            event=event, registry=registry, status=status,
-            clone_url="https://token@gitea.example.com/owner/repo.git",
-            default_branch="main",
+            system_prompt="You are a helpful assistant.",
+            user_message=event.comment.body,
+            registry=registry,
+            status=status,
         )
         # Only the first 2 should execute (3rd is blocked as duplicate)
         assert len(results) == 2
@@ -381,9 +386,10 @@ class TestToolLoop:
         registry.register(SearchApiTool(api))
 
         reply, results = await handler._tool_loop(
-            event=event, registry=registry, status=status,
-            clone_url="https://token@gitea.example.com/owner/repo.git",
-            default_branch="main",
+            system_prompt="You are a helpful assistant.",
+            user_message=event.comment.body,
+            registry=registry,
+            status=status,
         )
         # Should have broken out early due to stuck detection
         assert llm.chat_with_tools.call_count < 10
@@ -403,7 +409,6 @@ class TestVerifyAndMaybeRetry:
         result = await handler._verify_and_maybe_retry(
             "Everything looks good.",
             [],
-            event,
             status,
         )
         assert result == "Everything looks good."
@@ -426,7 +431,6 @@ class TestVerifyAndMaybeRetry:
         result = await handler._verify_and_maybe_retry(
             "All tests pass successfully.",
             tool_results,
-            event,
             status,
         )
         llm.chat.assert_called_once()
@@ -448,7 +452,6 @@ class TestVerifyAndMaybeRetry:
         result = await handler._verify_and_maybe_retry(
             "All tests pass.",
             tool_results,
-            event,
             status,
         )
         assert ":warning:" in result
@@ -470,7 +473,6 @@ class TestVerifyAndMaybeRetry:
         result = await handler._verify_and_maybe_retry(
             "All tests pass.",
             tool_results,
-            event,
             status,
         )
         assert ":warning:" in result

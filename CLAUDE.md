@@ -32,17 +32,19 @@ forge_bot/
   router.py       — event type + action → handler dispatch, self-loop guard, @mention detection
   models.py       — Pydantic models: PullRequestEvent, IssueCommentEvent, WebhookUser, etc.
   handlers/
-    base.py           — Abstract base: forge_client, llm_client, config injected
-    pull_request.py   — PR opened/synchronized: fetch diff, build review prompt, post comment
-    issue_comment.py  — Comment created: @mention reply with repo context
-                        Dynamic context budgets via _context_limits(context_window),
-                        conversation summarization for long threads,
-                        fetches repo tree, grounding files, referenced files/commits,
-                        downloads text attachments, runs LLM with fetch-loop
-                        (LLM can request files via [FETCH: path] or [FETCH: path@branch],
-                        handler fetches and re-prompts, max 2 rounds)
-                        handle_run(): sandbox code execution via /run command
-                        handle_index(): on-demand RAG re-indexing via /index command
+    base.py           — Abstract base: forge_client, llm_client, config injected,
+                        shared tool-calling loop (_tool_loop), response extraction,
+                        pre-post verification (_verify_and_maybe_retry),
+                        error handling (_post_error_response)
+    pull_request.py   — PR opened/synchronized: fetch diff, create workspace
+                        container, register tools (exec, api_call, search_api,
+                        todo, smart_search), run tool-calling loop, post review.
+                        Uses pr_review_tools.j2 template.
+    issue_comment.py  — Comment created: @mention reply with repo context.
+                        Creates workspace container, registers tools (exec,
+                        api_call, search_api, todo, smart_search), runs
+                        tool-calling loop, posts response.
+                        Uses issue_respond.j2 template.
     issue_assign.py   — Issue assigned to bot: greeting/triage (not yet implemented)
   clients/
     forge.py      — httpx.AsyncClient wrapper for Gitea/Forgejo API v1
