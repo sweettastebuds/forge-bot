@@ -179,28 +179,9 @@ class TestExtractText:
         assert IssueCommentHandler._extract_text(response) == ""
 
 
-# -- _build_system_prompt --
-
-
-class TestBuildSystemPrompt:
-    def test_renders_template(self) -> None:
-        handler, _, _ = _make_handler()
-        event = _make_event()
-
-        registry = MagicMock()
-        registry.prompt_text.return_value = "## Tools\n- exec: run commands"
-
-        prompt = handler._build_system_prompt(
-            event, registry,
-            clone_url="https://token@gitea.example.com/owner/repo.git",
-            default_branch="main",
-        )
-        assert "owner/repo" in prompt
-        assert "bot" in prompt
-        assert "exec" in prompt
-        assert "NEVER" in prompt
-        assert "clone" in prompt.lower()
-        assert "main" in prompt
+# -- _build_system_prompt (tested via full handle flow) --
+# The system prompt is now built inside handle() via a closure that calls
+# render_template.  See TestHandleFlow.test_system_prompt_rendered below.
 
 
 # -- _tool_loop --
@@ -508,11 +489,11 @@ class TestHandleFlow:
 
         with (
             patch(
-                "forge_bot.handlers.issue_comment.ContainerManager",
+                "forge_bot.handlers.base.ContainerManager",
                 return_value=mock_container,
             ),
             patch(
-                "forge_bot.handlers.issue_comment.StatusCommentManager",
+                "forge_bot.handlers.base.StatusCommentManager",
                 return_value=mock_status,
             ),
         ):
@@ -544,11 +525,11 @@ class TestHandleFlow:
 
         with (
             patch(
-                "forge_bot.handlers.issue_comment.ContainerManager",
+                "forge_bot.handlers.base.ContainerManager",
                 return_value=mock_container,
             ),
             patch(
-                "forge_bot.handlers.issue_comment.StatusCommentManager",
+                "forge_bot.handlers.base.StatusCommentManager",
                 return_value=mock_status,
             ),
         ):
@@ -583,11 +564,11 @@ class TestHandleFlow:
 
         with (
             patch(
-                "forge_bot.handlers.issue_comment.ContainerManager",
+                "forge_bot.handlers.base.ContainerManager",
                 return_value=mock_container,
             ),
             patch(
-                "forge_bot.handlers.issue_comment.StatusCommentManager",
+                "forge_bot.handlers.base.StatusCommentManager",
                 return_value=mock_status,
             ),
         ):
@@ -622,11 +603,11 @@ class TestHandleFlow:
 
         with (
             patch(
-                "forge_bot.handlers.issue_comment.ContainerManager",
+                "forge_bot.handlers.base.ContainerManager",
                 return_value=mock_container,
             ),
             patch(
-                "forge_bot.handlers.issue_comment.StatusCommentManager",
+                "forge_bot.handlers.base.StatusCommentManager",
                 return_value=mock_status,
             ),
         ):
@@ -634,3 +615,51 @@ class TestHandleFlow:
 
         # Should still post final response
         mock_status.post_response.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_rendered(self) -> None:
+        """System prompt should contain repo info, bot identity, and tool descriptions."""
+        handler, api, llm = _make_handler()
+        event = _make_event()
+
+        llm.chat_with_tools.return_value = _make_llm_response(
+            content="My response."
+        )
+
+        mock_container = MagicMock()
+        mock_container.create = AsyncMock()
+        mock_container.destroy = AsyncMock()
+        mock_container.exec = AsyncMock()
+        mock_container.clone_url = "https://token@gitea.example.com/owner/repo.git"
+        mock_container.default_branch = "main"
+
+        mock_status = MagicMock()
+        mock_status.post_initial_status = AsyncMock()
+        mock_status.update_phase = AsyncMock()
+        mock_status.record_tool_call = AsyncMock()
+        mock_status.post_response = AsyncMock()
+        mock_status.finalize_status = AsyncMock()
+
+        with (
+            patch(
+                "forge_bot.handlers.base.ContainerManager",
+                return_value=mock_container,
+            ),
+            patch(
+                "forge_bot.handlers.base.StatusCommentManager",
+                return_value=mock_status,
+            ),
+        ):
+            await handler.handle(event)
+
+        # Inspect the system prompt passed to chat_with_tools.
+        call_kwargs = llm.chat_with_tools.call_args
+        messages = call_kwargs.kwargs.get("messages") or call_kwargs.args[0]
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+        assert system_msgs
+        prompt = system_msgs[0]["content"]
+        assert "owner/repo" in prompt
+        assert "bot" in prompt
+        assert "NEVER" in prompt
+        assert "clone" in prompt.lower()
+        assert "main" in prompt

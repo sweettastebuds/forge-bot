@@ -2,6 +2,7 @@
 
 Provides shared infrastructure:
 - Template rendering
+- Container + status lifecycle (_run_with_tools)
 - Tool-calling loop with verification
 - Error handling helpers
 """
@@ -14,13 +15,14 @@ import re
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import jinja2
 
 from forge_bot.api.client import GenericForgeClient
 from forge_bot.clients.llm import LLMClient
 from forge_bot.config import Settings
+from forge_bot.container.manager import ContainerManager
 from forge_bot.handlers.verification import (
     ProgressTracker,
     check_hallucination,
@@ -29,8 +31,25 @@ from forge_bot.handlers.verification import (
 )
 from forge_bot.status.formatter import ToolCallRecord, abbreviate
 from forge_bot.status.manager import StatusCommentManager
+from forge_bot.tools.api_call import ApiCallTool
 from forge_bot.tools.base import ToolResult
+from forge_bot.tools.exec_tool import ExecTool
 from forge_bot.tools.registry import ToolRegistry
+from forge_bot.tools.search_api import SearchApiTool
+from forge_bot.tools.todo import TodoTool
+
+# Smart retrieval — always available (no optional deps), but guarded
+# so a broken import surfaces as a warning rather than crashing the handler.
+_RETRIEVAL_AVAILABLE = True
+try:
+    from forge_bot.retrieval.pipeline import SmartRetriever
+    from forge_bot.retrieval.tool import RetrievalTool
+except Exception:  # noqa: BLE001
+    _RETRIEVAL_AVAILABLE = False
+    logging.getLogger(__name__).warning(
+        "Smart retrieval import failed — tool will be unavailable",
+        exc_info=True,
+    )
 
 logger = logging.getLogger("forge_bot.handlers")
 
@@ -43,6 +62,10 @@ _template_env = jinja2.Environment(
 
 _MAX_TOOL_ROUNDS = 10
 _WARNING_BANNER = "> :warning: **This response may contain inaccuracies — please verify.**\n\n"
+
+# Callback type for building the system prompt.  Receives the
+# populated ToolRegistry, authenticated clone URL, and default branch.
+SystemPromptBuilder = Callable[[ToolRegistry, str, str], str]
 
 
 class BaseHandler(ABC):
@@ -68,6 +91,119 @@ class BaseHandler(ABC):
     @abstractmethod
     async def handle(self, event: object) -> None:
         """Process a webhook event. Subclasses must implement."""
+
+    # -- Shared orchestration --------------------------------------------------
+
+    async def _run_with_tools(
+        self,
+        *,
+        owner: str,
+        repo: str,
+        issue_index: int,
+        clone_url: str,
+        default_branch: str,
+        build_system_prompt: SystemPromptBuilder,
+        user_message: str,
+        initial_phase: str = "Thinking...",
+        error_message: str = "Sorry, I encountered an error.",
+    ) -> None:
+        """Full lifecycle: status → container → tools → loop → response.
+
+        Parameters
+        ----------
+        owner, repo, issue_index:
+            Repository coordinates for the status comment.
+        clone_url, default_branch:
+            Passed to ContainerManager and the system prompt builder.
+        build_system_prompt:
+            ``(registry, clone_url, default_branch) -> str`` callback that
+            each handler provides.
+        user_message:
+            The user-facing message for the LLM.
+        initial_phase:
+            Label shown in the status comment while the loop runs.
+        error_message:
+            Fallback message posted when an unrecoverable error occurs.
+        """
+        # 1. Post status comment.
+        status = StatusCommentManager(self.api, owner, repo, issue_index)
+        try:
+            await status.post_initial_status()
+        except Exception:
+            logger.warning("Failed to post initial status comment", exc_info=True)
+
+        # 2. Create workspace container.
+        container: ContainerManager | None = None
+        try:
+            await status.update_phase("Starting workspace...")
+            container = ContainerManager(
+                self.settings,
+                clone_url,
+                default_branch,
+                token=self.settings.forge_api_token,
+                network_enabled=self.settings.container_network_enabled,
+            )
+            await container.create()
+        except Exception:
+            logger.exception("Failed to create workspace container")
+            await self._post_error_response(
+                status,
+                "I encountered an error setting up a workspace. "
+                "Please try again later.",
+            )
+            if container:
+                await container.destroy()
+            return
+
+        try:
+            # 3. Register tools.
+            registry = ToolRegistry()
+            registry.register(SearchApiTool(self.api))
+            registry.register(ApiCallTool(self.api, owner=owner, repo=repo))
+            registry.register(ExecTool(container))
+            registry.register(TodoTool(status))
+
+            if _RETRIEVAL_AVAILABLE:
+                retriever = SmartRetriever(
+                    self.llm,
+                    context_window=self.settings.llm_context_window,
+                    max_parallel=self.settings.smart_retrieval_max_parallel,
+                )
+                registry.register(RetrievalTool(retriever, container))
+
+            # 4. Build system prompt via handler-supplied callback.
+            system_prompt = build_system_prompt(
+                registry, container.clone_url, default_branch,
+            )
+
+            # 5. Run tool-calling loop.
+            await status.update_phase(initial_phase)
+            reply, all_tool_results = await self._tool_loop(
+                system_prompt=system_prompt,
+                user_message=user_message,
+                registry=registry,
+                status=status,
+            )
+
+            # 6. Pre-post verification.
+            reply = await self._verify_and_maybe_retry(
+                reply, all_tool_results, status,
+            )
+
+            # 7. Post response.
+            try:
+                await status.post_response(reply)
+            except Exception:
+                logger.exception("Failed to post response on %s/%s#%d", owner, repo, issue_index)
+
+            # 8. Finalize status.
+            await status.finalize_status("Done")
+
+        except Exception:
+            logger.exception("Error processing %s/%s#%d", owner, repo, issue_index)
+            await self._post_error_response(status, error_message)
+        finally:
+            await container.destroy()
 
     # -- Tool-calling loop ---------------------------------------------------
 

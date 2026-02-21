@@ -130,7 +130,7 @@ def patch_container(mock_container, monkeypatch):
     """Patch ContainerManager so it returns the mock without creating a real container."""
     mock_cls = MagicMock(return_value=mock_container)
     monkeypatch.setattr(
-        "forge_bot.handlers.pull_request.ContainerManager",
+        "forge_bot.handlers.base.ContainerManager",
         mock_cls,
     )
     return mock_container
@@ -307,7 +307,7 @@ async def test_handle_container_creation_failure_posts_error(
 
     mock_cls = MagicMock(return_value=failing_container)
     monkeypatch.setattr(
-        "forge_bot.handlers.pull_request.ContainerManager",
+        "forge_bot.handlers.base.ContainerManager",
         mock_cls,
     )
 
