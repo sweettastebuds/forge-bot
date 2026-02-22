@@ -51,12 +51,15 @@ async def lifespan(app: FastAPI):
             bot_user["login"],
             bot_user["id"],
         )
-    except Exception:
-        logger.warning(
-            "Could not resolve bot identity — self-loop guard disabled. "
+    except Exception as e:
+        logger.critical(
+            "FATAL: Could not resolve bot identity"
+            "Self-loop guard cannot function without bot identity."
             "Check FORGE_INSTANCE_URL and FORGE_API_TOKEN."
         )
-        app.state.bot_username = ""
+        raise RuntimeError(
+            "Bot identity resolution failed - cannot start server safely."
+        ) from e
 
     # Initialize LLM client
     llm_client = LLMClient(app.state.settings)
@@ -98,6 +101,39 @@ def verify_hmac(body: bytes, signature: str | None, secret: str) -> None:
         raise HTTPException(status_code=403, detail="Invalid signature")
 
 
+def _extract_comment_target(
+    event_type: str, payload: dict[str, Any]
+) -> tuple[str, str, int] | None:
+    """
+    Extract (owner, repo, issue_number) from the payload for error comments.
+
+    Returns None if target cannot be determined.
+    """
+    repo_data = payload.get("repository", {})
+    if not repo_data:
+        return None
+
+    owner = repo_data.get("owner", {}).get("login")
+    repo = repo_data.get("name")
+
+    if not owner or not repo:
+        return None
+
+    # Extract issue/PR number based on event type
+    issue_number = None
+    if event_type == "issue_comment":
+        issue_number = payload.get("issue", {}).get("number")
+    elif event_type == "pull_request":
+        issue_number = payload.get("pull_request", {}).get("number")
+    elif event_type == "issues":
+        issue_number = payload.get("issue", {}).get("number")
+
+    if issue_number is None:
+        return None
+
+    return (owner, repo, issue_number)
+
+
 async def process_webhook(
     event_type: str,
     payload: dict[str, Any],
@@ -123,13 +159,48 @@ async def process_webhook(
             llm_client=llm_client,
             settings=settings,
         )
-    except Exception:
+    except Exception as e:
         logger.exception(
             "Error processing event=%s action=%s repo=%s",
             event_type,
             action,
             repo,
         )
+
+        # Attempt to post error comment to notify user
+        target = _extract_comment_target(event_type, payload)
+        if not target:
+            return
+
+        owner, repo_name, issue_number = target
+        error_body = (
+            "⚠️ **Processing Error**\n\n"
+            f"Failed to process this event due to an internal error:\n"
+            f"```\n{type(e).__name__}: {str(e)}\n```\n\n"
+            f"Please check the bot logs or contact your administrator."
+        )
+        try:
+            await api_client.call(
+                "create_issue_comment",
+                owner=owner,
+                repo=repo_name,
+                index=issue_number,
+                body=error_body,
+            )
+            logger.info(
+                "Posted error comment to %s/%s#%d",
+                owner,
+                repo_name,
+                issue_number,
+            )
+        except Exception as ex:
+            logger.exception(
+                "Failed to post error comment to %s/%s#%d",
+                owner,
+                repo_name,
+                issue_number,
+            )
+            logger.debug("Exception details:", exc_info=ex)
 
 
 @app.post("/webhook")
