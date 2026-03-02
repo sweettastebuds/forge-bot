@@ -32,10 +32,18 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv(k, v)
     # Clear optional env vars that may leak from the host environment.
     for var in (
-        "LLM_BASE_URL", "LLM_MODEL", "LLM_TEMPERATURE", "LLM_MAX_TOKENS",
-        "LLM_TIMEOUT", "LLM_MAX_CONCURRENT", "LLM_CONTEXT_WINDOW",
-        "SANDBOX_ENABLED", "SANDBOX_TIMEOUT", "RAG_ENABLED",
-        "LOG_LEVEL", "BOT_COMMAND_PREFIX",
+        "LLM_BASE_URL",
+        "LLM_MODEL",
+        "LLM_TEMPERATURE",
+        "LLM_MAX_TOKENS",
+        "LLM_TIMEOUT",
+        "LLM_MAX_CONCURRENT",
+        "LLM_CONTEXT_WINDOW",
+        "SANDBOX_ENABLED",
+        "SANDBOX_TIMEOUT",
+        "RAG_ENABLED",
+        "LOG_LEVEL",
+        "BOT_COMMAND_PREFIX",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -46,8 +54,8 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch):
     assert s.llm_max_tokens == 4096
     assert s.llm_timeout == 120
     assert s.llm_max_concurrent == 3
-    assert s.sandbox_enabled is True
-    assert s.sandbox_timeout == 60
+    assert s.container_enabled is True
+    assert s.container_timeout == 60
     assert s.rag_enabled is False
     assert s.log_level == "INFO"
     assert s.bot_command_prefix == "/"
@@ -66,7 +74,7 @@ def test_settings_override_optionals(monkeypatch: pytest.MonkeyPatch):
     s = Settings()
     assert s.llm_model == "llama3.2"
     assert s.llm_temperature == 0.7
-    assert s.sandbox_enabled is False
+    assert s.container_enabled is False
     assert s.rag_enabled is True
     assert s.log_level == "DEBUG"
 

@@ -12,7 +12,9 @@ class Settings(BaseSettings):
     # --- Gitea/Forgejo connection (required) ---
     forge_instance_url: str = Field(description="Base URL of Gitea/Forgejo instance")
     forge_api_token: str = Field(description="Bot account API token")
-    forge_webhook_secret: str = Field(description="HMAC secret for webhook verification")
+    forge_webhook_secret: str = Field(
+        description="HMAC secret for webhook verification"
+    )
     forge_provider: str = Field(
         default="gitea",
         description="API provider: 'gitea' or 'forgejo'",
@@ -33,10 +35,12 @@ class Settings(BaseSettings):
     )
 
     # --- Container / Sandbox ---
-    sandbox_enabled: bool = Field(default=True)
-    sandbox_timeout: int = Field(default=60, description="Max execution time in seconds")
-    sandbox_memory: str = Field(default="512m")
-    sandbox_cpus: float = Field(default=1.0)
+    container_enabled: bool = Field(default=True)
+    container_timeout: int = Field(
+        default=150, description="Max execution time in seconds"
+    )
+    container_memory: str = Field(default="512m")
+    container_cpus: float = Field(default=1.0)
     container_workspace_image: str = Field(
         default="forge-bot-workspace:latest",
         description="Docker image for per-event workspace containers",

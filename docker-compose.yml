@@ -5,34 +5,13 @@ services:
     restart: unless-stopped
     ports:
       - "${WEBHOOK_PORT:-8080}:8080"
+    env_file:
+      - .env
     environment:
-      # Forge connection
-      - FORGE_INSTANCE_URL=${FORGE_INSTANCE_URL}
-      - FORGE_API_TOKEN=${FORGE_API_TOKEN}
-      - FORGE_WEBHOOK_SECRET=${FORGE_WEBHOOK_SECRET}
-      - FORGE_PROVIDER=${FORGE_PROVIDER:-gitea}
-      # LLM
-      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.openai.com/v1}
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_MODEL=${LLM_MODEL:-gpt-4o}
-      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.2}
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-4096}
-      - LLM_MAX_CONCURRENT=${LLM_MAX_CONCURRENT:-3}
-      - LLM_CONTEXT_WINDOW=${LLM_CONTEXT_WINDOW:-8192}
-      - LLM_TIMEOUT=${LLM_TIMEOUT:-120}
-      # Container / workspace
+      # Docker-in-Docker connection
       - DOCKER_HOST=tcp://dind:2376
       - DOCKER_TLS_VERIFY=1
       - DOCKER_CERT_PATH=/certs/client/client
-      - SANDBOX_ENABLED=${SANDBOX_ENABLED:-true}
-      - SANDBOX_TIMEOUT=${SANDBOX_TIMEOUT:-60}
-      - SANDBOX_MEMORY=${SANDBOX_MEMORY:-512m}
-      - SANDBOX_CPUS=${SANDBOX_CPUS:-1.0}
-      - CONTAINER_WORKSPACE_IMAGE=${CONTAINER_WORKSPACE_IMAGE:-forge-bot-workspace:latest}
-      - CONTAINER_NETWORK_ENABLED=${CONTAINER_NETWORK_ENABLED:-true}
-      # Optional
-      - RAG_ENABLED=${RAG_ENABLED:-false}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - forge-data:/data
       - dind-certs:/certs/client:ro

@@ -22,6 +22,19 @@ logger = logging.getLogger("forge_bot.container.manager")
 _MAX_OUTPUT_CHARS = 8_000
 _INIT_POLL_INTERVAL = 1.0  # seconds
 
+_INIT_SCRIPT = (
+    "if command -v git >/dev/null 2>&1; then "
+    "echo 'FORGE_INIT: tools present, skipping install'; "
+    "else "
+    "echo 'FORGE_INIT: installing git curl jq...' && "
+    "apt-get update -qq && "
+    "apt-get install -y -qq --no-install-recommends git curl jq >/dev/null 2>&1 && "
+    "echo 'FORGE_INIT: install complete'; "
+    "fi && "
+    "echo FORGE_READY && "
+    "sleep infinity"
+)
+
 
 @dataclass
 class ExecResult:
@@ -91,6 +104,23 @@ class ContainerManager:
 
     # -- lifecycle --
 
+    async def build_image(self, dockerfile_path: str) -> None:
+        """Build a custom Docker image from a Dockerfile.
+
+        This can be used to prepare a custom workspace image with specific
+        tools or dependencies pre-installed.  The image is tagged as
+        ``forge-bot-workspace:latest`` by default.
+        """
+        self._docker = await asyncio.to_thread(docker.from_env)
+        logger.info("Building Docker image from %s...", dockerfile_path)
+        await asyncio.to_thread(
+            self._docker.images.build,
+            path=".",
+            dockerfile=dockerfile_path,
+            tag=self._image,
+        )
+        logger.info("Docker image %s built successfully", self._image)
+
     async def create(self) -> None:
         """Create the container and wait until ready.
 
@@ -103,10 +133,10 @@ class ContainerManager:
         self._container = await asyncio.to_thread(
             self._docker.containers.run,
             self._image,
-            ["sh", "-c", "echo 'FORGE_READY' && sleep infinity"],
+            ["sh", "-c", _INIT_SCRIPT],
             detach=True,
-            mem_limit=self._settings.sandbox_memory,
-            nano_cpus=int(self._settings.sandbox_cpus * 1e9),
+            mem_limit=self._settings.container_memory,
+            nano_cpus=int(self._settings.container_cpus * 1e9),
             pids_limit=256,
             network_mode="bridge" if self._network else "none",
             working_dir="/workspace",
@@ -115,7 +145,7 @@ class ContainerManager:
         )
 
         logger.info("Container %s created", self._container.short_id)
-        await self._wait_for_ready(timeout=self._settings.sandbox_timeout)
+        await self._wait_for_ready(timeout=self._settings.container_timeout)
         logger.info("Container %s ready", self._container.short_id)
 
     async def exec(
@@ -134,7 +164,7 @@ class ContainerManager:
             raise RuntimeError("Container not created — call create() first")
 
         effective_timeout = min(
-            timeout or self._settings.sandbox_timeout,
+            timeout or self._settings.container_timeout,
             120,
         )
 
@@ -200,14 +230,14 @@ class ContainerManager:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             logs: bytes = await asyncio.to_thread(
-                self._container.logs, stdout=True, stderr=False,
+                self._container.logs,
+                stdout=True,
+                stderr=False,
             )
             if b"FORGE_READY" in logs:
                 return
             await asyncio.sleep(_INIT_POLL_INTERVAL)
-        raise TimeoutError(
-            f"Container init did not complete within {timeout}s"
-        )
+        raise TimeoutError(f"Container init did not complete within {timeout}s")
 
     @staticmethod
     def _inject_token(clone_url: str, token: str) -> str:
