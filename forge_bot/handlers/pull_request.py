@@ -80,7 +80,9 @@ class PullRequestHandler(BaseHandler):
 
         # Fetch diff and changed file list.
         try:
-            diff_text = await self.api.call("get_pull_diff", owner=owner, repo=repo, index=pr_num)
+            diff_text = await self.api.call(
+                "get_pull_diff", owner=owner, repo=repo, index=pr_num
+            )
         except Exception:
             logger.exception(
                 "Failed to fetch diff for %s#%d",
@@ -88,6 +90,14 @@ class PullRequestHandler(BaseHandler):
                 pr_num,
             )
             diff_text = ""
+
+        if not diff_text:
+            logger.warning(
+                "Empty diff for %s#%d, skipping review",
+                event.repository.full_name,
+                pr_num,
+            )
+            return
 
         try:
             changed_files = await self.api.call(
@@ -101,20 +111,8 @@ class PullRequestHandler(BaseHandler):
             )
             changed_files = []
 
-        if not diff_text:
-            logger.warning(
-                "Empty diff for %s#%d, skipping review",
-                event.repository.full_name,
-                pr_num,
-            )
-            return
-
         # Ensure diff_text is a string (call() may return dict for json endpoints).
         diff_text = str(diff_text)
-
-        # # Truncate very large diffs to avoid exceeding LLM context.
-        # if len(diff_text) > _MAX_DIFF_CHARS:
-        #     diff_text = diff_text[:_MAX_DIFF_CHARS] + "\n\n... (diff truncated)"
 
         # Build a concise file summary for the prompt.
         if isinstance(changed_files, list):
@@ -130,29 +128,6 @@ class PullRequestHandler(BaseHandler):
             review = await self._review_single(event, file_summary, diff_text)
         else:
             review = await self._review_chunked(event, file_summary, diff_text)
-
-        # # Render the system prompt from the Jinja2 template.
-        # system_prompt = self.render_template(
-        #     "pr_review.j2",
-        #     repo_full_name=event.repository.full_name,
-        #     pr_title=event.pull_request.title,
-        # )
-
-        # User message = PR description + file list + diff.
-        # user_message = self._build_user_message(event, file_summary, diff_text)
-
-        # # Call the LLM.
-        # try:
-        #     review = await self.llm.chat(system_prompt, user_message)
-        # except Exception:
-        #     logger.exception(
-        #         "LLM call failed for PR %s#%d",
-        #         event.repository.full_name,
-        #         pr_num,
-        #     )
-        #     review = (
-        #         "Sorry, I encountered an error while reviewing this PR. Please try again later."
-        #     )
 
         # Post the review as a regular comment (inline reviews are unreliable).
         try:
@@ -272,9 +247,7 @@ class PullRequestHandler(BaseHandler):
             pr_title=event.pull_request.title,
             combined_reviews=combined_reviews,
         )
-        user_message = (
-            f"## PR #{event.pull_request.number}: {event.pull_request.title}\n\n{combined_reviews}"
-        )
+        user_message = f"## PR #{event.pull_request.number}: {event.pull_request.title}\n\n{combined_reviews}"
         try:
             return await self.llm.chat(system_prompt, user_message)
         except Exception:

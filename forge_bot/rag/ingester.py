@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
 from forge_bot.rag.chunker import Chunker, CodeChunk, detect_language
 
 if TYPE_CHECKING:
-    from forge_bot.clients.forge import ForgeClient
+    from forge_bot.api.client import GenericForgeClient
     from forge_bot.rag.embedder import Embedder
     from forge_bot.rag.store import VectorStore
 
@@ -24,6 +25,7 @@ _SKIP_EXTENSIONS = {
     ".dylib", ".pyc", ".pyo", ".class", ".o", ".obj",
 }
 _EMBED_BATCH_SIZE = 32
+_FETCH_CONCURRENCY = 5  # Limit concurrent fetches to avoid overwhelming the API
 
 
 def _should_skip_path(path: str) -> bool:
@@ -43,12 +45,12 @@ class Ingester:
 
     def __init__(
         self,
-        forge: ForgeClient,
+        api_client: GenericForgeClient,
         chunker: Chunker,
         embedder: Embedder,
         store: VectorStore,
     ) -> None:
-        self._forge = forge
+        self._api = api_client
         self._chunker = chunker
         self._embedder = embedder
         self._store = store
@@ -63,7 +65,8 @@ class Ingester:
         logger.info("Ingesting %s/%s (ref=%s)", owner, repo, ref)
 
         try:
-            tree = await self._forge.get_repo_tree(owner, repo, ref=ref)
+            result = await self._api.call("get_repo_tree", owner=owner, repo=repo, ref=ref)
+            tree = result.get("tree", []) if isinstance(result, dict) else []
         except Exception:
             logger.exception("Failed to fetch repo tree for %s/%s", owner, repo)
             return 0
@@ -111,22 +114,27 @@ class Ingester:
     ) -> int:
         """Fetch, chunk, embed, and store a list of files."""
         all_chunks: list[CodeChunk] = []
+        sem = asyncio.Semaphore(_FETCH_CONCURRENCY)  # Limit concurrent fetches to avoid overload
 
-        for path in file_paths:
-            try:
-                content = await self._forge.get_file_content(
-                    owner, repo, path, ref=ref,
-                )
-            except Exception:
-                logger.warning("Could not fetch %s, skipping", path)
-                continue
+        async def _fetch_and_chunk(path: str) -> list[CodeChunk]:
+            async with sem:
+                try:
+                    content = await self._api.call(
+                        "get_file_content", owner=owner, repo=repo, filepath=path, ref=ref,
+                    )
+                except Exception:
+                    logger.warning("Could not fetch %s, skipping", path)
+                    return []
 
             if len(content) > _MAX_FILE_SIZE:
                 logger.debug("Skipping %s (too large: %d bytes)", path, len(content))
-                continue
+                return []
 
             language = detect_language(path)
-            chunks = self._chunker.chunk_file(content, path, language)
+            return self._chunker.chunk_file(content, path, language)
+
+        results = await asyncio.gather(*[_fetch_and_chunk(path) for path in file_paths])
+        for chunks in results:
             all_chunks.extend(chunks)
 
         if not all_chunks:

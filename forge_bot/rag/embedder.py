@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -32,7 +33,7 @@ class Embedder:
             return []
         if self._embed_url:
             return await self._embed_via_api(texts)
-        return self._embed_local(texts)
+        return await self._embed_local(texts)
 
     async def embed_query(self, query: str) -> list[float]:
         """Embed a single query string."""
@@ -55,7 +56,7 @@ class Embedder:
         )
         return [item.embedding for item in response.data]
 
-    def _embed_local(self, texts: list[str]) -> list[list[float]]:
+    async def _embed_local(self, texts: list[str]) -> list[list[float]]:
         """Compute embeddings using a local sentence-transformers model."""
         if self._local_model is None:
             from sentence_transformers import SentenceTransformer
@@ -64,5 +65,5 @@ class Embedder:
             self._local_model = SentenceTransformer(self._model_name)
             logger.info("Embedding model loaded")
 
-        embeddings = self._local_model.encode(texts, convert_to_numpy=True)
+        embeddings = await asyncio.to_thread(self._local_model.encode, texts, convert_to_numpy=True)
         return [e.tolist() for e in embeddings]

@@ -42,6 +42,7 @@ class Retriever:
         changed_files: list[str],
         pr_title: str = "",
         top_k: int = 10,
+        max_tokens: int | None = None,
     ) -> str:
         """Retrieve context relevant to a PR.
 
@@ -54,15 +55,18 @@ class Retriever:
             query = f"{pr_title}. {query}"
 
         context = await self._pipeline.retrieve(owner, repo, query, top_k=top_k)
-        return self._truncate(context)
 
-    def _truncate(self, context: str) -> str:
+        max_chars = (max_tokens * 4) if max_tokens else self._max_chars
+        return self._truncate(context, max_chars)
+
+    def _truncate(self, context: str, max_chars: int | None = None) -> str:
         """Truncate context to the configured max size."""
-        if len(context) <= self._max_chars:
+        limit = max_chars if max_chars is not None else self._max_chars
+        if len(context) <= limit:
             return context
-        truncated = context[: self._max_chars]
+        truncated = context[:limit]
         # Try to cut at a code block boundary.
         last_fence = truncated.rfind("```\n")
-        if last_fence > self._max_chars // 2:
+        if last_fence > limit // 2:
             truncated = truncated[: last_fence + 4]
         return truncated + "\n\n*(context truncated)*"
