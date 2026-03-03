@@ -58,7 +58,9 @@ class Chunker:
     """Split source files into semantically meaningful chunks."""
 
     def __init__(
-        self, chunk_size: int = 1500, overlap: int = 200,
+        self,
+        chunk_size: int = 1500,
+        overlap: int = 200,
     ) -> None:
         self._chunk_size = chunk_size  # in tokens
         self._overlap = overlap  # in tokens
@@ -67,7 +69,10 @@ class Chunker:
         self._ts_available: bool | None = None
 
     def chunk_file(
-        self, content: str, file_path: str, language: str = "",
+        self,
+        content: str,
+        file_path: str,
+        language: str = "",
     ) -> list[CodeChunk]:
         """Chunk a file into a list of CodeChunks.
 
@@ -89,7 +94,10 @@ class Chunker:
         return self._chunk_with_fallback(content, file_path, language)
 
     def _chunk_with_ast(
-        self, content: str, file_path: str, language: str,
+        self,
+        content: str,
+        file_path: str,
+        language: str,
     ) -> list[CodeChunk]:
         """Extract function/class chunks using tree-sitter."""
         if self._ts_available is False:
@@ -106,7 +114,10 @@ class Chunker:
             return []
 
     def _do_tree_sitter_parse(
-        self, content: str, file_path: str, language: str,
+        self,
+        content: str,
+        file_path: str,
+        language: str,
     ) -> list[CodeChunk]:
         """Actual tree-sitter parsing logic (may raise ImportError)."""
         import tree_sitter  # noqa: F401
@@ -133,7 +144,8 @@ class Chunker:
             target_types = {"function_definition", "class_definition"}
         else:
             target_types = {
-                "function_declaration", "class_declaration",
+                "function_declaration",
+                "class_declaration",
                 "export_statement",
             }
 
@@ -156,7 +168,11 @@ class Chunker:
                 # Split oversized chunks.
                 if len(chunk_content) > self._max_chars:
                     sub_chunks = self._split_large_chunk(
-                        chunk_content, file_path, language, symbol, start,
+                        chunk_content,
+                        file_path,
+                        language,
+                        symbol,
+                        start,
                     )
                     chunks.extend(sub_chunks)
                 else:
@@ -215,7 +231,10 @@ class Chunker:
         return chunks
 
     def _chunk_with_fallback(
-        self, content: str, file_path: str, language: str,
+        self,
+        content: str,
+        file_path: str,
+        language: str,
     ) -> list[CodeChunk]:
         """Split on double-newline boundaries with sliding window."""
         # Split into paragraphs first.

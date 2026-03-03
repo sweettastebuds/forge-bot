@@ -1,6 +1,7 @@
 """Estimated token budget tracking for multi-round LLM sessions."""
 
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 
 # Conservative estimate: 1 token ≈ 4 chars for mixed code/natural-language content.

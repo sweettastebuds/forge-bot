@@ -50,9 +50,7 @@ def load_provider_definition(provider: str) -> ApiDefinitionFile:
     """
     path = DEFINITIONS_DIR / f"{provider}.yaml"
     if not path.exists():
-        raise FileNotFoundError(
-            f"No API definition file for provider '{provider}' at {path}"
-        )
+        raise FileNotFoundError(f"No API definition file for provider '{provider}' at {path}")
     return load_api_definition(path)
 
 

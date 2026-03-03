@@ -40,7 +40,10 @@ class RAGPipeline:
         self._embedder = Embedder(self._settings)
         self._store = VectorStore(self._settings.rag_store_path)
         self._ingester = Ingester(
-            self._api, self._chunker, self._embedder, self._store,
+            self._api,
+            self._chunker,
+            self._embedder,
+            self._store,
         )
         logger.info("RAG pipeline initialized")
 

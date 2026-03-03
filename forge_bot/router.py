@@ -68,9 +68,7 @@ async def dispatch(
             event.repository.full_name,
         )
         if api_client and llm_client and settings:
-            handler = PullRequestHandler(
-                api_client, llm_client, settings, bot_username
-            )
+            handler = PullRequestHandler(api_client, llm_client, settings, bot_username)
             await handler.handle(event)
         return
 
@@ -84,9 +82,7 @@ async def dispatch(
 
         # Only act if the bot is @mentioned in the comment body.
         if not _mentions_user(event.comment.body, bot_username):
-            logger.debug(
-                "Comment #%d does not mention bot, skipping", event.comment.id
-            )
+            logger.debug("Comment #%d does not mention bot, skipping", event.comment.id)
             return
 
         logger.info(
@@ -96,9 +92,7 @@ async def dispatch(
             event.repository.full_name,
         )
         if api_client and llm_client and settings:
-            handler = IssueCommentHandler(
-                api_client, llm_client, settings, bot_username
-            )
+            handler = IssueCommentHandler(api_client, llm_client, settings, bot_username)
             await handler.handle(event)
         return
 

@@ -31,6 +31,18 @@ _INIT_SCRIPT = (
     "apt-get install -y -qq --no-install-recommends git curl jq >/dev/null 2>&1 && "
     "echo 'FORGE_INIT: install complete'; "
     "fi && "
+    # Install forge-api helper — lets the LLM call the Gitea/Forgejo API
+    # with `forge-api GET /repos/owner/repo/...` instead of a full curl command.
+    "printf '%s\\n' '#!/bin/sh' "
+    "'METHOD=\"${1:-GET}\"' "
+    "'ENDPOINT=\"$2\"' "
+    "'shift 2 2>/dev/null' "
+    "'exec curl -sf "
+    '-H "Authorization: token $FORGE_TOKEN" '
+    '-H "Content-Type: application/json" '
+    '-X "$METHOD" "$FORGE_URL/api/v1$ENDPOINT" "$@"\' '
+    "> /usr/local/bin/forge-api && "
+    "chmod +x /usr/local/bin/forge-api && "
     "echo FORGE_READY && "
     "sleep infinity"
 )
@@ -70,6 +82,9 @@ class ContainerManager:
         token: str = "",
         network_enabled: bool = True,
         image: str | None = None,
+        forge_url: str = "",
+        owner: str = "",
+        repo: str = "",
     ) -> None:
         self._settings = settings
         self._clone_url = repo_clone_url
@@ -77,6 +92,9 @@ class ContainerManager:
         self._token = token
         self._network = network_enabled
         self._image = image or settings.container_workspace_image
+        self._forge_url = forge_url
+        self._owner = owner
+        self._repo = repo
         self._docker: docker.DockerClient | None = None
         self._container: Any = None
         self._authed_url: str = ""
@@ -140,7 +158,13 @@ class ContainerManager:
             pids_limit=256,
             network_mode="bridge" if self._network else "none",
             working_dir="/workspace",
-            environment={"GIT_TERMINAL_PROMPT": "0"},
+            environment={
+                "GIT_TERMINAL_PROMPT": "0",
+                "FORGE_URL": self._forge_url,
+                "FORGE_TOKEN": self._token,
+                "FORGE_OWNER": self._owner,
+                "FORGE_REPO": self._repo,
+            },
             tmpfs={"/tmp": "size=200m"},
         )
 
@@ -179,7 +203,7 @@ class ContainerManager:
                 ),
                 timeout=effective_timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             duration = time.monotonic() - start
             return ExecResult(
                 exit_code=-1,

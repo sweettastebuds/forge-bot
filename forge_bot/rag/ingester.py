@@ -19,10 +19,35 @@ logger = logging.getLogger("forge_bot.rag.ingester")
 _MAX_FILE_SIZE = 100_000  # 100 KB
 _SKIP_DIRS = {"vendor", "node_modules", ".git", "__pycache__", ".venv", "venv"}
 _SKIP_EXTENSIONS = {
-    ".min.js", ".min.css", ".pb.go", ".png", ".jpg", ".jpeg", ".gif",
-    ".ico", ".svg", ".woff", ".woff2", ".ttf", ".eot", ".mp3", ".mp4",
-    ".zip", ".tar", ".gz", ".bz2", ".pdf", ".exe", ".dll", ".so",
-    ".dylib", ".pyc", ".pyo", ".class", ".o", ".obj",
+    ".min.js",
+    ".min.css",
+    ".pb.go",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".ico",
+    ".svg",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".mp3",
+    ".mp4",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".bz2",
+    ".pdf",
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".pyc",
+    ".pyo",
+    ".class",
+    ".o",
+    ".obj",
 }
 _EMBED_BATCH_SIZE = 32
 _FETCH_CONCURRENCY = 5  # Limit concurrent fetches to avoid overwhelming the API
@@ -56,7 +81,10 @@ class Ingester:
         self._store = store
 
     async def ingest_repo(
-        self, owner: str, repo: str, ref: str,
+        self,
+        owner: str,
+        repo: str,
+        ref: str,
     ) -> int:
         """Ingest all eligible files from a repository.
 
@@ -72,22 +100,30 @@ class Ingester:
             return 0
 
         file_paths = [
-            e["path"]
-            for e in tree
-            if e.get("type") == "blob" and not _should_skip_path(e["path"])
+            e["path"] for e in tree if e.get("type") == "blob" and not _should_skip_path(e["path"])
         ]
 
         logger.info(
             "Ingesting %s/%s: %d eligible files from tree",
-            owner, repo, len(file_paths),
+            owner,
+            repo,
+            len(file_paths),
         )
 
         return await self._ingest_file_list(
-            owner, repo, ref, file_paths, f"{owner}/{repo}",
+            owner,
+            repo,
+            ref,
+            file_paths,
+            f"{owner}/{repo}",
         )
 
     async def ingest_files(
-        self, owner: str, repo: str, ref: str, file_paths: list[str],
+        self,
+        owner: str,
+        repo: str,
+        ref: str,
+        file_paths: list[str],
     ) -> int:
         """Selectively re-index specific files.
 
@@ -101,7 +137,11 @@ class Ingester:
             self._store.delete_by_file(collection, path)
 
         return await self._ingest_file_list(
-            owner, repo, ref, file_paths, repo_full_name,
+            owner,
+            repo,
+            ref,
+            file_paths,
+            repo_full_name,
         )
 
     async def _ingest_file_list(
@@ -120,7 +160,11 @@ class Ingester:
             async with sem:
                 try:
                     content = await self._api.call(
-                        "get_file_content", owner=owner, repo=repo, filepath=path, ref=ref,
+                        "get_file_content",
+                        owner=owner,
+                        repo=repo,
+                        filepath=path,
+                        ref=ref,
                     )
                 except Exception:
                     logger.warning("Could not fetch %s, skipping", path)
@@ -155,6 +199,7 @@ class Ingester:
 
         logger.info(
             "Ingested %s: %d chunks stored",
-            repo_full_name, len(all_chunks),
+            repo_full_name,
+            len(all_chunks),
         )
         return len(all_chunks)

@@ -1,5 +1,5 @@
-import re
 import logging
+import re
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 logger = logging.getLogger("forge_bot.thinking")

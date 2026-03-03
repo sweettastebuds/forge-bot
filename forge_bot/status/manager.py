@@ -45,6 +45,7 @@ class StatusCommentManager:
         self._repo = repo
         self._issue_index = issue_index
         self._status_comment_id: int | None = None
+        self._response_comment_id: int | None = None
         self._todos: list[TodoItem] = []
         self._tool_calls: list[ToolCallRecord] = []
         self._current_phase: str = "Starting..."
@@ -87,13 +88,35 @@ class StatusCommentManager:
 
     async def post_response(self, body: str) -> dict:
         """Post the final LLM response as a separate comment."""
-        return await self._api.call(
+        result = await self._api.call(
             "post_issue_comment",
             owner=self._owner,
             repo=self._repo,
             index=self._issue_index,
             body=body,
         )
+        self._response_comment_id = result.get("id")
+        return result
+
+    async def attach_file(
+        self, filename: str, content: bytes, comment_id: int | None = None
+    ) -> dict | None:
+        """Upload a file attachment to a comment."""
+        cid = comment_id or self._response_comment_id
+        if not cid:
+            logger.warning("No comment ID for attachment")
+            return None
+        try:
+            return await self._api.call(
+                "upload_comment_attachment",
+                owner=self._owner,
+                repo=self._repo,
+                id=cid,
+                attachment=(filename, content),
+            )
+        except Exception:
+            logger.warning("Failed to upload attachment %s", filename, exc_info=True)
+            return None
 
     async def finalize_status(self, final_phase: str = "Done") -> None:
         """Mark the status comment as complete."""

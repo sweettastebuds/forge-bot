@@ -57,9 +57,7 @@ async def lifespan(app: FastAPI):
             "Self-loop guard cannot function without bot identity."
             "Check FORGE_INSTANCE_URL and FORGE_API_TOKEN."
         )
-        raise RuntimeError(
-            "Bot identity resolution failed - cannot start server safely."
-        ) from e
+        raise RuntimeError("Bot identity resolution failed - cannot start server safely.") from e
 
     # Initialize LLM client
     llm_client = LLMClient(app.state.settings)
