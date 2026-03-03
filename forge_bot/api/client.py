@@ -79,47 +79,45 @@ class GenericForgeClient:
         query_params: dict[str, str] = {}
         body_params: dict[str, Any] = {}
 
+        form_params: dict[str, Any] = {}
+
         for param_def in ep.params:
             value = params.get(param_def.name, param_def.default)
             if value is None and param_def.required:
                 raise ValueError(
-                    f"Missing required parameter '{param_def.name}' "
-                    f"for endpoint '{endpoint_name}'"
+                    f"Missing required parameter '{param_def.name}' for endpoint '{endpoint_name}'"
                 )
             if value is None:
                 continue
 
             if param_def.location == "path":
-                url_path = url_path.replace(
-                    f"{{{param_def.name}}}", str(value)
-                )
+                url_path = url_path.replace(f"{{{param_def.name}}}", str(value))
             elif param_def.location == "query":
                 query_params[param_def.name] = str(value)
             elif param_def.location == "body":
                 body_params[param_def.name] = value
+            elif param_def.location == "form":
+                form_params[param_def.name] = value
 
         full_url = f"{self._base_url}{self._base_path}{url_path}"
 
         # Merge endpoint-specific headers with defaults.
         headers = dict(ep.headers) if ep.headers else {}
 
+        # Build the request kwargs depending on content type.
+        is_multipart = ep.content_type == "multipart/form-data" or form_params
+
         method = ep.method.upper()
         if method == "GET":
-            resp = await self._client.get(
-                full_url, params=query_params, headers=headers
-            )
-        elif method == "POST":
-            resp = await self._client.post(
-                full_url, json=body_params, headers=headers
-            )
-        elif method == "PATCH":
-            resp = await self._client.patch(
-                full_url, json=body_params, headers=headers
-            )
-        elif method == "PUT":
-            resp = await self._client.put(
-                full_url, json=body_params, headers=headers
-            )
+            resp = await self._client.get(full_url, params=query_params, headers=headers)
+        elif method in ("POST", "PATCH", "PUT"):
+            if is_multipart:
+                files = self._build_files(form_params)
+                request_method = getattr(self._client, method.lower())
+                resp = await request_method(full_url, files=files, headers=headers)
+            else:
+                request_method = getattr(self._client, method.lower())
+                resp = await request_method(full_url, json=body_params, headers=headers)
         elif method == "DELETE":
             resp = await self._client.delete(full_url, headers=headers)
         else:
@@ -161,6 +159,27 @@ class GenericForgeClient:
     def list_endpoints(self) -> list[str]:
         """List all registered endpoint names, sorted alphabetically."""
         return sorted(self._endpoints.keys())
+
+    @staticmethod
+    def _build_files(
+        form_params: dict[str, Any],
+    ) -> dict[str, tuple[str, Any]]:
+        """Convert form params into httpx ``files`` dict for multipart upload.
+
+        Values can be:
+        - ``(filename, content_bytes)`` tuple — used as-is.
+        - ``bytes`` — wrapped with a generic filename.
+        - ``str`` — treated as a text field.
+        """
+        files: dict[str, tuple[str, Any]] = {}
+        for name, value in form_params.items():
+            if isinstance(value, tuple) and len(value) == 2:
+                files[name] = value
+            elif isinstance(value, bytes):
+                files[name] = (name, value)
+            else:
+                files[name] = (name, str(value).encode())
+        return files
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

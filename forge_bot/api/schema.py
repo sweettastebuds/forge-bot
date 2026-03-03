@@ -11,8 +11,8 @@ class EndpointParam(BaseModel):
     """Describes a single parameter for an API endpoint."""
 
     name: str
-    type: str  # "string", "integer", "boolean", "array"
-    location: str  # "path", "query", "body"
+    type: str  # "string", "integer", "boolean", "array", "file"
+    location: str  # "path", "query", "body", "form"
     required: bool = True
     description: str = ""
     default: Any = None
@@ -30,6 +30,7 @@ class EndpointDef(BaseModel):
     response_type: str = "json"  # "json" or "text"
     headers: dict[str, str] = Field(default_factory=dict)
     body_template: dict[str, str] = Field(default_factory=dict)
+    content_type: str = ""  # "" (default JSON) or "multipart/form-data"
 
 
 class ApiDefinitionFile(BaseModel):

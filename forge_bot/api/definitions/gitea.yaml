@@ -442,6 +442,34 @@ endpoints:
         description: "Pull request number"
     response_type: json
 
+  # --- Comment attachments ---
+  - name: upload_comment_attachment
+    method: POST
+    path: /repos/{owner}/{repo}/issues/comments/{id}/assets
+    description: "Upload a file attachment to an issue comment"
+    tags: [attachment, comment, upload, file]
+    content_type: multipart/form-data
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: id
+        type: integer
+        location: path
+        required: true
+        description: "Comment ID"
+      - name: attachment
+        type: file
+        location: form
+        required: true
+        description: "File to upload"
+    response_type: json
+
   # --- Search code ---
   - name: search_code
     method: GET
