@@ -1,74 +1,31 @@
-"""Handler for pull_request webhook events (code review)."""
+"""Handler for pull_request webhook events (code review).
+
+Uses the AgentLoop so the LLM can clone the repo, generate diffs,
+run linters / tests, and produce a thorough review autonomously.
+"""
 
 from __future__ import annotations
 
 import logging
 
+from forge_bot.agent import AgentLoop
+from forge_bot.container.manager import ContainerManager
 from forge_bot.handlers.base import BaseHandler
 from forge_bot.models import PullRequestEvent
-from forge_bot.utils.token_budget import TokenBudget
+from forge_bot.retrieval.pipeline import SmartRetriever
+from forge_bot.retrieval.tool import RetrievalTool
+from forge_bot.status.manager import StatusCommentManager
 
 logger = logging.getLogger("forge_bot.handlers.pull_request")
 
-# Diffs larger than this are truncated to stay within LLM context limits.
-_MAX_DIFF_CHARS = 30_000
-# Max chars per chunk (leave room for system prompt + PR metadata).
-_CHUNK_CHARS = 25_000
-# Maximum number of chunks to review (to bound cost/time).
-_MAX_CHUNKS = 8
-
-
-def _split_diff_by_file(diff_text: str) -> list[str]:
-    """Split a unified diff into per-file segments."""
-    segments: list[str] = []
-    current: list[str] = []
-    for line in diff_text.splitlines(keepends=True):
-        if line.startswith("diff --git ") and current:
-            segments.append("".join(current))
-            current = []
-        current.append(line)
-    if current:
-        segments.append("".join(current))
-    return segments
-
-
-def _pack_chunks(file_diffs: list[str], max_chars: int) -> list[str]:
-    """Pack per-file diffs into chunks that fit within *max_chars*.
-
-    Each file stays whole unless it alone exceeds the limit (then it's
-    hard-truncated).  Files are grouped greedily.
-    """
-    chunks: list[str] = []
-    current_parts: list[str] = []
-    current_len = 0
-
-    for fd in file_diffs:
-        fd_len = len(fd)
-        # Single file exceeds limit — truncate it into its own chunk.
-        if fd_len > max_chars:
-            if current_parts:
-                chunks.append("".join(current_parts))
-                current_parts, current_len = [], 0
-            chunks.append(fd[:max_chars] + "\n\n... (file diff truncated)")
-            continue
-        # Would overflow current chunk — flush.
-        if current_len + fd_len > max_chars and current_parts:
-            chunks.append("".join(current_parts))
-            current_parts, current_len = [], 0
-        current_parts.append(fd)
-        current_len += fd_len
-
-    if current_parts:
-        chunks.append("".join(current_parts))
-    return chunks
-
 
 class PullRequestHandler(BaseHandler):
-    """Review PRs on opened/synchronized by posting an LLM-generated summary."""
+    """Review PRs using the agent loop with a workspace container."""
 
     async def handle(self, event: PullRequestEvent) -> None:
         owner, repo = event.repository.full_name.split("/", 1)
-        pr_num = event.pull_request.number
+        pr = event.pull_request
+        pr_num = pr.number
 
         logger.info(
             "Reviewing PR %s#%d (%s) by %s",
@@ -78,230 +35,79 @@ class PullRequestHandler(BaseHandler):
             event.sender.login,
         )
 
-        # Fetch diff and changed file list.
+        # Post status comment for real-time observability.
+        status = StatusCommentManager(self.api, owner, repo, pr_num)
         try:
-            diff_text = await self.api.call(
-                "get_pull_diff", owner=owner, repo=repo, index=pr_num
-            )
+            await status.post_initial_status()
         except Exception:
-            logger.exception(
-                "Failed to fetch diff for %s#%d",
-                event.repository.full_name,
-                pr_num,
-            )
-            diff_text = ""
+            logger.warning("Failed to post initial status", exc_info=True)
 
-        if not diff_text:
-            logger.warning(
-                "Empty diff for %s#%d, skipping review",
-                event.repository.full_name,
-                pr_num,
-            )
-            return
-
+        # Create workspace container.
+        container = ContainerManager(
+            self.settings,
+            event.repository.clone_url,
+            event.repository.default_branch,
+            token=self.settings.forge_api_token,
+            network_enabled=self.settings.container_network_enabled,
+            forge_url=self.settings.forge_instance_url,
+            owner=owner,
+            repo=repo,
+        )
         try:
-            changed_files = await self.api.call(
-                "get_pull_files", owner=owner, repo=repo, index=pr_num
-            )
-        except Exception:
-            logger.exception(
-                "Failed to fetch files for %s#%d",
-                event.repository.full_name,
-                pr_num,
-            )
-            changed_files = []
+            await status.update_phase("Starting workspace...")
+            await container.create()
 
-        # Ensure diff_text is a string (call() may return dict for json endpoints).
-        diff_text = str(diff_text)
-
-        # Build a concise file summary for the prompt.
-        if isinstance(changed_files, list):
-            file_summary = "\n".join(
-                f"- {f.get('filename', '?')} (+{f.get('additions', 0)}/{-f.get('deletions', 0)})"
-                for f in changed_files
+            system_prompt = self.render_template(
+                "agent_pr_review.j2",
+                repo_full_name=event.repository.full_name,
+                pr_number=pr_num,
+                pr_title=pr.title,
+                pr_body=pr.body or "",
+                head_branch=pr.head.ref,
+                base_branch=pr.base.ref,
+                bot_username=self.bot_username,
+                clone_url=container.clone_url,
+                default_branch=event.repository.default_branch,
             )
-        else:
-            file_summary = ""
 
-        # Decide: single-pass or chunked review.
-        if len(diff_text) <= _MAX_DIFF_CHARS:
-            review = await self._review_single(event, file_summary, diff_text)
-        else:
-            review = await self._review_chunked(event, file_summary, diff_text)
+            user_message = f"Review PR #{pr_num}: {pr.title}"
 
-        # Post the review as a regular comment (inline reviews are unreliable).
-        try:
-            await self.api.call(
-                "post_issue_comment",
-                owner=owner,
-                repo=repo,
-                index=pr_num,
-                body=review,
+            # Set up smart retrieval tool.
+            retriever = SmartRetriever(self.llm, context_window=self.settings.llm_context_window)
+            search_tool = RetrievalTool(retriever, container)
+
+            agent = AgentLoop(
+                self.llm,
+                container,
+                self.settings,
+                status=status,
+                extra_tools=[search_tool],
             )
+            review = await agent.run(system_prompt, user_message)
+
+            # Collect and attach artifacts.
+            artifacts = await agent.collect_artifacts()
+            await status.post_response(review)
+            for filename, content in artifacts:
+                await status.attach_file(filename, content)
+
+            await status.finalize_status("Done")
             logger.info("Posted review on %s#%d", event.repository.full_name, pr_num)
         except Exception:
             logger.exception(
-                "Failed to post review on %s#%d",
+                "Error reviewing %s#%d",
                 event.repository.full_name,
                 pr_num,
             )
+            await self._post_error(status)
+        finally:
+            await container.destroy()
 
-    async def _review_single(
-        self,
-        event: PullRequestEvent,
-        file_summary: str,
-        diff_text: str,
-    ) -> str:
-        """Review the PR in a single pass."""
-        system_prompt = self.render_template(
-            "pr_review.j2",
-            repo_full_name=event.repository.full_name,
-            pr_title=event.pull_request.title,
-        )
-        user_message = self._build_user_message(event, file_summary, diff_text)
+    # -- helpers -------------------------------------------------------------
+
+    async def _post_error(self, status: StatusCommentManager) -> None:
         try:
-            return await self.llm.chat(system_prompt, user_message)
+            await status.post_response("Sorry, I encountered an error while reviewing this PR.")
+            await status.finalize_status("Error")
         except Exception:
-            logger.exception(
-                "LLM call failed for PR %s#%d",
-                event.repository.full_name,
-                event.pull_request.number,
-            )
-            return "Sorry, I encountered an error while reviewing this PR. Please try again later."
-
-    async def _review_chunked(
-        self,
-        event: PullRequestEvent,
-        file_summary: str,
-        diff_text: str,
-    ) -> str:
-        """Review the PR in multiple chunks and aggregate the feedback."""
-        file_diffs = _split_diff_by_file(diff_text)
-        chunks = _pack_chunks(file_diffs, _CHUNK_CHARS)
-        total = len(chunks)
-
-        if len(chunks) > _MAX_CHUNKS:
-            logger.warning(
-                "PR %s#%d has %d chunks, exceeding the max of %d. Truncating.",
-                event.repository.full_name,
-                event.pull_request.number,
-                total,
-                _MAX_CHUNKS,
-            )
-            chunks = chunks[:_MAX_CHUNKS]
-
-        logger.info(
-            "Chunked review for %s#%d: %d chunks",
-            event.repository.full_name,
-            event.pull_request.number,
-            total,
-        )
-
-        # Phase 1: review each chunk independently.
-        chunk_reviews = []
-        for i, chunk in enumerate(chunks):
-            system_prompt = self.render_template(
-                "pr_review_chunk.j2",
-                repo_full_name=event.repository.full_name,
-                pr_title=event.pull_request.title,
-                chunk_index=i + 1,
-                total_chunks=len(chunks),
-            )
-            # system_prompt = self.render_template(
-            #     "pr_review.j2",
-            #     repo_full_name=event.repository.full_name,
-            #     pr_title=event.pull_request.title,
-            # )
-            user_message = self._build_chunk_message(
-                event, file_summary, chunk, part=i, total=total
-            )
-            try:
-                review = await self.llm.chat(system_prompt, user_message)
-                chunk_reviews.append(review)
-            except Exception:
-                logger.exception(
-                    "LLM chunk %d/%d failed for PR %s#%d",
-                    i,
-                    total,
-                    event.repository.full_name,
-                    event.pull_request.number,
-                )
-                chunk_reviews.append(
-                    f"### Part {i}/{total}\n\n_Failed to review this portion of the diff._"
-                )
-
-        # Phase 2: synthesise a unified summary from chunk reviews.
-        combined = "\n\n---\n\n".join(chunk_reviews)
-        synthesis = await self._synthesise(event, combined)
-
-        return synthesis
-
-    async def _synthesise(
-        self,
-        event: PullRequestEvent,
-        combined_reviews: str,
-    ) -> str:
-        system_prompt = self.render_template(
-            "pr_review_synthesis.j2",
-            repo_full_name=event.repository.full_name,
-            pr_title=event.pull_request.title,
-            combined_reviews=combined_reviews,
-        )
-        user_message = f"## PR #{event.pull_request.number}: {event.pull_request.title}\n\n{combined_reviews}"
-        try:
-            return await self.llm.chat(system_prompt, user_message)
-        except Exception:
-            logger.exception(
-                "Synthesis LLM call failed for PR %s#%d",
-                event.repository.full_name,
-                event.pull_request.number,
-            )
-            # Fallback: return the raw chunk reviews without synthesis.
-            return (
-                "_⚠️ Failed to synthesise a unified review. "
-                "Showing per-part reviews:_\n\n" + combined_reviews
-            )
-
-    # ------------------------------------------------------------------
-    # Message builders
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _build_user_message(
-        event: PullRequestEvent,
-        file_summary: str,
-        diff_text: str,
-    ) -> str:
-        pr = event.pull_request
-        parts = [
-            f"## PR #{pr.number}: {pr.title}",
-            f"**Branch:** {pr.head.ref} → {pr.base.ref}",
-        ]
-        if pr.body:
-            parts.append(f"\n**Description:**\n{pr.body}")
-        if file_summary:
-            parts.append(f"\n**Changed files:**\n{file_summary}")
-        parts.append(f"\n**Diff:**\n```diff\n{diff_text}\n```")
-        return "\n".join(parts)
-
-    @staticmethod
-    def _build_chunk_message(
-        event: PullRequestEvent,
-        file_summary: str,
-        diff_chunk: str,
-        *,
-        part: int,
-        total: int,
-    ) -> str:
-        pr = event.pull_request
-        parts = [
-            f"## PR #{pr.number}: {pr.title} - Part {part}/{total}",
-            f"**Branch:** {pr.head.ref} → {pr.base.ref}",
-        ]
-
-        if pr.body and part == 1:
-            parts.append(f"\n**Description:**\n{pr.body}")
-        if file_summary and part == 1:
-            parts.append(f"\n**All changed files:**\n{file_summary}")
-        parts.append(f"\n**Diff (part {part}/{total}):**\n```diff\n{diff_chunk}\n```")
-        return "\n".join(parts)
+            logger.warning("Failed to post error response", exc_info=True)
