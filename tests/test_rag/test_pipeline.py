@@ -39,7 +39,10 @@ async def test_ensure_indexed_skips_if_exists(settings, mock_api_client):
     mock_ingester = AsyncMock()
 
     pipeline = _setup_pipeline(
-        settings, mock_api_client, store=mock_store, ingester=mock_ingester,
+        settings,
+        mock_api_client,
+        store=mock_store,
+        ingester=mock_ingester,
     )
     count = await pipeline.ensure_indexed("owner", "repo", "main")
 
@@ -56,7 +59,10 @@ async def test_ensure_indexed_force(settings, mock_api_client):
     mock_ingester.ingest_repo.return_value = 42
 
     pipeline = _setup_pipeline(
-        settings, mock_api_client, store=mock_store, ingester=mock_ingester,
+        settings,
+        mock_api_client,
+        store=mock_store,
+        ingester=mock_ingester,
     )
     count = await pipeline.ensure_indexed("owner", "repo", "main", force=True)
 
@@ -92,7 +98,10 @@ async def test_retrieve_formats_context(settings, mock_api_client):
     mock_embedder.embed_query.return_value = [0.5] * 8
 
     pipeline = _setup_pipeline(
-        settings, mock_api_client, store=mock_store, embedder=mock_embedder,
+        settings,
+        mock_api_client,
+        store=mock_store,
+        embedder=mock_embedder,
     )
     result = await pipeline.retrieve("owner", "repo", "what is hello?")
 
@@ -112,7 +121,10 @@ async def test_reindex_files(settings, mock_api_client):
 
     assert count == 5
     mock_ingester.ingest_files.assert_called_once_with(
-        "owner", "repo", "main", ["src/main.py"],
+        "owner",
+        "repo",
+        "main",
+        ["src/main.py"],
     )
 
 

@@ -8,9 +8,7 @@ from forge_bot.api.schema import ApiDefinitionFile, EndpointDef, EndpointParam
 
 class TestEndpointParam:
     def test_required_fields(self) -> None:
-        p = EndpointParam(
-            name="owner", type="string", location="path"
-        )
+        p = EndpointParam(name="owner", type="string", location="path")
         assert p.name == "owner"
         assert p.type == "string"
         assert p.location == "path"
@@ -56,9 +54,7 @@ class TestEndpointDef:
             description="Get raw file content",
             tags=["file", "content"],
             params=[
-                EndpointParam(
-                    name="owner", type="string", location="path"
-                ),
+                EndpointParam(name="owner", type="string", location="path"),
                 EndpointParam(
                     name="ref",
                     type="string",
@@ -140,9 +136,7 @@ class TestApiDefinitionFile:
 
     def test_missing_endpoint_name_fails(self) -> None:
         raw = {
-            "endpoints": [
-                {"method": "GET", "path": "/x", "description": "x"}
-            ],
+            "endpoints": [{"method": "GET", "path": "/x", "description": "x"}],
         }
         with pytest.raises(ValidationError):
             ApiDefinitionFile.model_validate(raw)

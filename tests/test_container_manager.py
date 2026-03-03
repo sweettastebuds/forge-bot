@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,9 +17,9 @@ def settings() -> Settings:
         forge_api_token="test-token",
         forge_webhook_secret="test-secret",
         llm_api_key="test-llm-key",
-        sandbox_timeout=60,
-        sandbox_memory="512m",
-        sandbox_cpus=1.0,
+        container_timeout=60,
+        container_memory="512m",
+        container_cpus=1.0,
         container_workspace_image="forge-bot-workspace:latest",
     )
 
@@ -58,9 +57,7 @@ class TestTokenInjection:
         assert result == "https://mytoken@gitea.example.com/owner/repo.git"
 
     def test_http_url(self) -> None:
-        result = ContainerManager._inject_token(
-            "http://gitea.local/owner/repo.git", "tok123"
-        )
+        result = ContainerManager._inject_token("http://gitea.local/owner/repo.git", "tok123")
         assert result == "http://tok123@gitea.local/owner/repo.git"
 
     def test_empty_token(self) -> None:
@@ -195,7 +192,7 @@ class TestCreate:
             forge_api_token="test-token",
             forge_webhook_secret="test-secret",
             llm_api_key="test-llm-key",
-            sandbox_timeout=1,
+            container_timeout=1,
         )
         cm._settings = settings_short
 

@@ -1,6 +1,5 @@
 """Tests for forge_bot.router."""
 
-
 from forge_bot.router import _mentions_user, dispatch
 
 BOT = "forge-bot"

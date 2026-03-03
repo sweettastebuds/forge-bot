@@ -1,7 +1,5 @@
 """Tests for the GenericForgeClient."""
 
-from unittest.mock import patch
-
 import httpx
 import pytest
 import pytest_httpx
@@ -79,9 +77,7 @@ class TestSearch:
         # Endpoints with "branch" in name should rank higher
         if len(results) >= 2:
             top = results[0]
-            assert "branch" in top.name.lower() or any(
-                "branch" in t for t in top.tags
-            )
+            assert "branch" in top.name.lower() or any("branch" in t for t in top.tags)
 
 
 class TestGetEndpoint:
@@ -115,9 +111,7 @@ class TestCall:
             url="https://gitea.example.com/api/v1/repos/owner/repo/pulls/1.diff",
             text="diff --git a/file.py b/file.py\n",
         )
-        result = await client.call(
-            "get_pull_diff", owner="owner", repo="repo", index=1
-        )
+        result = await client.call("get_pull_diff", owner="owner", repo="repo", index=1)
         assert "diff --git" in result
 
     @pytest.mark.asyncio
@@ -128,9 +122,7 @@ class TestCall:
             url="https://gitea.example.com/api/v1/repos/myowner/myrepo/git/commits/abc123",
             json={"sha": "abc123", "message": "test"},
         )
-        result = await client.call(
-            "get_commit", owner="myowner", repo="myrepo", sha="abc123"
-        )
+        result = await client.call("get_commit", owner="myowner", repo="myrepo", sha="abc123")
         assert result["sha"] == "abc123"
 
     @pytest.mark.asyncio
@@ -187,16 +179,12 @@ class TestCall:
         assert request.method == "PATCH"
 
     @pytest.mark.asyncio
-    async def test_unknown_endpoint(
-        self, client: GenericForgeClient
-    ) -> None:
+    async def test_unknown_endpoint(self, client: GenericForgeClient) -> None:
         with pytest.raises(ValueError, match="Unknown API endpoint"):
             await client.call("nonexistent_endpoint")
 
     @pytest.mark.asyncio
-    async def test_missing_required_param(
-        self, client: GenericForgeClient
-    ) -> None:
+    async def test_missing_required_param(self, client: GenericForgeClient) -> None:
         with pytest.raises(ValueError, match="Missing required parameter"):
             await client.call("get_commit", owner="owner")
             # Missing repo and sha

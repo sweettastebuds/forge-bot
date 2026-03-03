@@ -16,7 +16,6 @@ from forge_bot.status.formatter import (
 )
 from forge_bot.status.manager import StatusCommentManager
 
-
 # -- formatter tests --
 
 
@@ -112,9 +111,7 @@ class TestFormatToolCallsSection:
         assert format_tool_calls_section([]) == ""
 
     def test_single(self) -> None:
-        records = [
-            ToolCallRecord("exec", "ls", "file.py", True, 0.2)
-        ]
+        records = [ToolCallRecord("exec", "ls", "file.py", True, 0.2)]
         result = format_tool_calls_section(records)
         assert "<details>" in result
         assert "Tool calls (1)" in result
@@ -122,8 +119,7 @@ class TestFormatToolCallsSection:
 
     def test_max_shown(self) -> None:
         records = [
-            ToolCallRecord(f"tool{i}", f"arg{i}", f"result{i}", True, 0.1)
-            for i in range(15)
+            ToolCallRecord(f"tool{i}", f"arg{i}", f"result{i}", True, 0.1) for i in range(15)
         ]
         result = format_tool_calls_section(records, max_shown=5)
         assert "Tool calls (15)" in result
@@ -183,10 +179,12 @@ class TestStatusCommentManager:
         await mgr.post_initial_status()
 
         api.call.reset_mock()
-        await mgr.update_todos([
-            TodoItem("Fetch files", done=True),
-            TodoItem("Run tests"),
-        ])
+        await mgr.update_todos(
+            [
+                TodoItem("Fetch files", done=True),
+                TodoItem("Run tests"),
+            ]
+        )
 
         call_args = api.call.call_args
         body = call_args[1]["body"]
@@ -201,13 +199,15 @@ class TestStatusCommentManager:
         await mgr.post_initial_status()
 
         api.call.reset_mock()
-        await mgr.record_tool_call(ToolCallRecord(
-            tool_name="exec",
-            arguments_summary="git log",
-            result_summary="abc123 initial commit",
-            success=True,
-            duration_seconds=1.5,
-        ))
+        await mgr.record_tool_call(
+            ToolCallRecord(
+                tool_name="exec",
+                arguments_summary="git log",
+                result_summary="abc123 initial commit",
+                success=True,
+                duration_seconds=1.5,
+            )
+        )
 
         call_args = api.call.call_args
         body = call_args[1]["body"]
@@ -267,13 +267,15 @@ class TestStatusCommentManager:
 
         # Add many tool calls to exceed limit
         for i in range(100):
-            mgr._tool_calls.append(ToolCallRecord(
-                tool_name=f"tool_{i}",
-                arguments_summary="x" * 100,
-                result_summary="y" * 100,
-                success=True,
-                duration_seconds=0.1,
-            ))
+            mgr._tool_calls.append(
+                ToolCallRecord(
+                    tool_name=f"tool_{i}",
+                    arguments_summary="x" * 100,
+                    result_summary="y" * 100,
+                    success=True,
+                    duration_seconds=0.1,
+                )
+            )
 
         api.call.reset_mock()
         await mgr._update_status_comment()

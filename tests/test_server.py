@@ -43,9 +43,11 @@ def _set_env(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture
 async def client():
     mock_call = AsyncMock(return_value={"id": 1, "login": "forge-bot"})
-    with patch("forge_bot.server.GenericForgeClient.call", mock_call), \
-         patch("forge_bot.server.GenericForgeClient.close", AsyncMock()), \
-         patch("forge_bot.server.LLMClient.close", AsyncMock()):
+    with (
+        patch("forge_bot.server.GenericForgeClient.call", mock_call),
+        patch("forge_bot.server.GenericForgeClient.close", AsyncMock()),
+        patch("forge_bot.server.LLMClient.close", AsyncMock()),
+    ):
         async with app.router.lifespan_context(app):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as c:

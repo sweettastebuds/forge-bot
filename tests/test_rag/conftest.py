@@ -40,17 +40,10 @@ _DEFAULT_TREE = [
 _DEFAULT_FILES = {
     "README.md": "# My Project\nA sample project.",
     "src/main.py": (
-        "def hello():\n    print('hello world')\n\n"
-        "def goodbye():\n    print('goodbye')\n"
+        "def hello():\n    print('hello world')\n\ndef goodbye():\n    print('goodbye')\n"
     ),
-    "src/utils.py": (
-        "def add(a, b):\n    return a + b\n\n"
-        "def multiply(a, b):\n    return a * b\n"
-    ),
-    "tests/test_main.py": (
-        "from src.main import hello\n\n"
-        "def test_hello():\n    hello()\n"
-    ),
+    "src/utils.py": ("def add(a, b):\n    return a + b\n\ndef multiply(a, b):\n    return a * b\n"),
+    "tests/test_main.py": ("from src.main import hello\n\ndef test_hello():\n    hello()\n"),
 }
 
 

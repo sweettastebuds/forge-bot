@@ -55,7 +55,7 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch):
     assert s.llm_timeout == 120
     assert s.llm_max_concurrent == 3
     assert s.container_enabled is True
-    assert s.container_timeout == 60
+    assert s.container_timeout == 150
     assert s.rag_enabled is False
     assert s.log_level == "INFO"
     assert s.bot_command_prefix == "/"
@@ -65,7 +65,7 @@ def test_settings_override_optionals(monkeypatch: pytest.MonkeyPatch):
     env = _required_env()
     env["LLM_MODEL"] = "llama3.2"
     env["LLM_TEMPERATURE"] = "0.7"
-    env["SANDBOX_ENABLED"] = "false"
+    env["CONTAINER_ENABLED"] = "false"
     env["RAG_ENABLED"] = "true"
     env["LOG_LEVEL"] = "DEBUG"
     for k, v in env.items():
