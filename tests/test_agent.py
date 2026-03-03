@@ -679,23 +679,29 @@ class TestCollectArtifacts:
         assert result[0][1] == b"Report content"
 
     @pytest.mark.asyncio
-    async def test_collect_artifacts_shell_safe(self) -> None:
-        """Filenames with special characters are safely quoted."""
+    async def test_collect_artifacts_path_traversal_blocked(self) -> None:
+        """Path traversal in artifact names is stripped by os.path.basename."""
         agent, _, container = _make_agent()
+        captured_commands: list[str] = []
 
         async def mock_exec(command, timeout=60, **kw):
+            captured_commands.append(command)
             if "ls " in command:
-                return _FakeExecResult(stdout="file with spaces.txt")
-            if "file with spaces.txt" in command:
-                # Verify the filename is properly quoted (not bare single quotes)
-                assert "'" not in command or command.count("'") >= 2
-                return _FakeExecResult(stdout="content")
+                return _FakeExecResult(stdout="../etc/passwd\nnormal.txt")
+            if command.startswith("cat "):
+                return _FakeExecResult(stdout="safe content")
             return _FakeExecResult()
 
         container.exec = AsyncMock(side_effect=mock_exec)
         agent._read_notes = AsyncMock(return_value="")
         result = await agent.collect_artifacts()
-        assert len(result) == 1
+
+        # Path traversal (../) should be stripped by os.path.basename
+        cat_commands = [c for c in captured_commands if c.startswith("cat ")]
+        for cmd in cat_commands:
+            assert "../" not in cmd
+        # Both files should be collected (basename-stripped)
+        assert len(result) == 2
 
 
 class TestContextTrimming:

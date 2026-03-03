@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shlex
 import time
@@ -295,8 +296,12 @@ class AgentLoop:
                 name = name.strip()
                 if not name:
                     continue
-                safe_name = shlex.quote(f"{_ARTIFACTS_DIR}/{name}")
-                content = await self._container.exec(f"cat {safe_name}", timeout=10)
+                # Strip directory components to prevent path traversal
+                name = os.path.basename(name)
+                if not name:
+                    continue
+                safe_path = shlex.quote(f"{_ARTIFACTS_DIR}/{name}")
+                content = await self._container.exec(f"cat {safe_path}", timeout=10)
                 if content.exit_code == 0:
                     artifacts.append((name, content.stdout.encode()))
             return artifacts
