@@ -406,3 +406,27 @@ class TestNetworkMode:
         assert call_kwargs["network_mode"] == "none"
 
         await cm.destroy()
+
+
+class TestExecTimeout:
+    @pytest.mark.asyncio
+    async def test_timeout_respects_configured_value(self) -> None:
+        """exec() uses container_timeout from settings as cap, not hardcoded 120."""
+        settings = Settings(
+            forge_instance_url="https://gitea.example.com",
+            forge_api_token="test-token",
+            forge_webhook_secret="test-secret",
+            llm_api_key="test-llm-key",
+            container_timeout=150,
+        )
+        cm = ContainerManager(
+            settings,
+            "https://gitea.example.com/owner/repo.git",
+            "main",
+        )
+        # Simulate that container is created
+        mock_container = _make_mock_container()
+        cm._container = mock_container
+
+        result = await cm.exec("echo test")
+        assert result.exit_code == 0

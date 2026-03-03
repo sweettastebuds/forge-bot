@@ -23,7 +23,11 @@ class IssueCommentHandler(BaseHandler):
     """Respond to @mentions using the agent loop with a workspace container."""
 
     async def handle(self, event: IssueCommentEvent) -> None:
-        owner, repo = event.repository.full_name.split("/", 1)
+        full_name = event.repository.full_name
+        if "/" not in full_name:
+            logger.error("Invalid repository full_name: %s", full_name)
+            return
+        owner, repo = full_name.split("/", 1)
         issue_num = event.issue.number
 
         logger.info(

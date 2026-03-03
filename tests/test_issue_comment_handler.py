@@ -356,3 +356,14 @@ class TestConversationContext:
 
         # Should include just the issue body
         assert "My issue" in result
+
+    @pytest.mark.asyncio
+    async def test_invalid_full_name_returns_early(self) -> None:
+        """Handler returns early if full_name has no '/' separator."""
+        handler, api, _ = _make_handler()
+        event = _make_event(repo_full_name="noslash")
+
+        await handler.handle(event)
+
+        # Should not have attempted to post any comment
+        api.call.assert_not_awaited()

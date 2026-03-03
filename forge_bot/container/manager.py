@@ -189,7 +189,7 @@ class ContainerManager:
 
         effective_timeout = min(
             timeout or self._settings.container_timeout,
-            120,
+            self._settings.container_timeout,
         )
 
         start = time.monotonic()
