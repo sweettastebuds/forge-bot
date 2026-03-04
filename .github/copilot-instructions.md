@@ -43,8 +43,9 @@ Key invariants:
   (Gitea sends `null` for empty lists like `assignees` and `requested_reviewers`).
 - **`pydantic-settings` `Settings` class** (`config.py`) for all environment variables.
   Never read `os.environ` directly elsewhere.
-- **Jinja2 `.j2` templates** in `forge_bot/prompts/` for every LLM prompt. Never build
-  prompts by string concatenation in handler code.
+- **Jinja2 `.j2` templates** in `forge_bot/prompts/` for all system / multi-line /
+  structured LLM prompts. Short, simple user messages (e.g. one-liners) may be built
+  inline in handlers (including with `f`-strings).
 - **YAML-driven API client.** Endpoint definitions live in
   `forge_bot/api/definitions/gitea.yaml` (and `forgejo.yaml`). Do not hard-code API URLs
   or add new `httpx` calls outside `GenericForgeClient`. New endpoints belong in the YAML.
