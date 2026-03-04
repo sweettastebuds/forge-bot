@@ -98,8 +98,8 @@ Key invariants:
 
 ## Testing Conventions
 
-- **pytest-asyncio** with `asyncio_mode = "auto"` — all async test functions are
-  discovered automatically; do not add `@pytest.mark.asyncio` manually.
+- **pytest-asyncio** with `asyncio_mode = "auto"` — async tests run without extra
+  configuration; `@pytest.mark.asyncio` is acceptable and commonly used in this repo.
 - **pytest-httpx** for mocking outbound HTTP (`httpx.AsyncClient`).
 - Use `unittest.mock.AsyncMock` for coroutine dependencies (`api.call`, `llm.chat`, etc.).
   Use `MagicMock` for synchronous objects (settings, container, status).
