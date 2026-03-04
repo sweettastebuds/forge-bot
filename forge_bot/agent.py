@@ -63,7 +63,7 @@ _TODO_SET_RE = re.compile(r"FORGE_TODO:set:(.+)")
 _TODO_CHECK_RE = re.compile(r"FORGE_TODO:check:(.+)")
 
 # Detect text-embedded tool calls (models that output JSON instead of using API).
-_TEXT_TOOL_RE = re.compile(r'\{\s*"name"\s*:\s*"execute"')
+_TEXT_TOOL_RE = re.compile(r'\{\s*"name"\s*:\s*"[a-zA-Z_]\w*"')
 
 _REASONING_NUDGE = (
     "Pause and assess: What have you found so far? "
@@ -72,6 +72,14 @@ _REASONING_NUDGE = (
 
 
 # -- internal helpers --------------------------------------------------------
+
+
+@dataclass
+class _TextToolCall:
+    """Parsed tool call extracted from LLM text output."""
+
+    name: str
+    arguments: dict[str, Any]
 
 
 @dataclass
@@ -140,10 +148,11 @@ def _truncate(text: str, limit: int) -> str:
     return text[:head] + mid + text[-tail:] if tail else text[:head] + mid
 
 
-def _extract_text_tool_call(text: str) -> str | None:
+def _extract_text_tool_call(text: str) -> _TextToolCall | None:
     """Detect when an LLM outputs a tool call as JSON text instead of using the API.
 
-    Returns the command string if found, else None.
+    Returns a ``_TextToolCall`` with the tool name and parsed arguments, or
+    ``None`` if no valid tool call is found in the text.
     """
     if not _TEXT_TOOL_RE.search(text):
         return None
@@ -160,10 +169,13 @@ def _extract_text_tool_call(text: str) -> str | None:
                 end = i + 1
                 break
         data = json.loads(text[start:end])
+        name = data.get("name", "")
+        if not name:
+            return None
         args = data.get("arguments", {})
         if isinstance(args, str):
             args = json.loads(args)
-        return args.get("command", "")
+        return _TextToolCall(name=name, arguments=args if isinstance(args, dict) else {})
     except (json.JSONDecodeError, ValueError, KeyError):
         return None
 
@@ -231,11 +243,18 @@ class AgentLoop:
 
             # No tool calls -- check for text-embedded tool calls or final response
             if not msg.tool_calls:
-                text_cmd = _extract_text_tool_call(msg.content or "")
-                if text_cmd and state.text_call_count < 3:
+                valid_names = {"execute"} | {t.name for t in self._extra_tools}
+                text_call = _extract_text_tool_call(msg.content or "")
+                if text_call and text_call.name in valid_names and state.text_call_count < 3:
                     state.text_call_count += 1
                     messages.append({"role": "assistant", "content": msg.content})
-                    result = await self._handle_tool_call(text_cmd, state, round_num)
+                    if text_call.name == "execute":
+                        command = text_call.arguments.get("command", "")
+                        result = await self._handle_tool_call(command, state, round_num)
+                    else:
+                        result = await self._dispatch_extra_tool(
+                            text_call.name, text_call.arguments, round_num
+                        )
                     messages.append({"role": "user", "content": f"Tool result:\n{result}"})
                     state.record_round(True)
                     round_num += 1
