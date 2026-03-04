@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("forge_bot.router")
 
 # Actions we care about for each event type.
-_PR_ACTIONS = {"opened", "synchronized"}
+_PR_ACTIONS = {"opened", "synchronized", "review_requested"}
 _COMMENT_ACTIONS = {"created"}
 _ISSUE_ACTIONS = {"opened", "assigned"}
 
