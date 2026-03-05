@@ -187,6 +187,7 @@ class AgentLoop:
         *,
         status: StatusCommentManager | None = None,
         extra_tools: list[BaseTool] | None = None,
+        agent_name: str = "",
     ) -> None:
         self._llm = llm
         self._container = container
@@ -194,6 +195,7 @@ class AgentLoop:
         self._status = status
         self._extra_tools = extra_tools or []
         self._context_window = settings.llm_context_window
+        self._agent_name = agent_name
 
     # -- public API ----------------------------------------------------------
 
@@ -321,7 +323,8 @@ class AgentLoop:
         # Status update
         if self._status:
             short = abbreviate(command, 80)
-            await self._status.update_phase(f"Running: `{short}`")
+            prefix = f"[{self._agent_name}] " if self._agent_name else ""
+            await self._status.update_phase(f"{prefix}Running: `{short}`")
 
         # Execute
         start = time.monotonic()
@@ -346,6 +349,7 @@ class AgentLoop:
                     ),
                     success=result.exit_code == 0,
                     duration_seconds=round(duration, 2),
+                    agent_name=self._agent_name,
                 )
             )
 
@@ -382,7 +386,8 @@ class AgentLoop:
             args = arguments
 
         if self._status:
-            await self._status.update_phase(f"Running: `{name}`")
+            prefix = f"[{self._agent_name}] " if self._agent_name else ""
+            await self._status.update_phase(f"{prefix}Running: `{name}`")
 
         start = time.monotonic()
         try:
@@ -398,6 +403,7 @@ class AgentLoop:
                         result_summary=abbreviate(result.content, 100),
                         success=result.success,
                         duration_seconds=round(duration, 2),
+                        agent_name=self._agent_name,
                     )
                 )
 

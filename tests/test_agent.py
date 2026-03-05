@@ -691,3 +691,47 @@ class TestContextTrimming:
         messages = last_call.kwargs.get("messages", last_call.args[0] if last_call.args else [])
         # System + user are always present (at least 2 messages)
         assert len(messages) >= 2
+
+
+class TestAgentName:
+    @pytest.mark.asyncio
+    async def test_agent_name_prefixes_status(self) -> None:
+        """When agent_name is set, status.update_phase includes the prefix."""
+        status = MagicMock()
+        status.update_phase = AsyncMock()
+        status.record_tool_call = AsyncMock()
+
+        agent, _, _ = _make_agent(
+            llm_responses=[_llm_tool(["echo hi"]), _llm_text("Done.")],
+            status=status,
+        )
+        agent._agent_name = "test-sub-agent"
+        await agent.run("system", "user msg")
+
+        # Check that the phase update includes the agent name prefix.
+        phase_calls = [call.args[0] for call in status.update_phase.call_args_list]
+        assert any("[test-sub-agent]" in p for p in phase_calls)
+
+        # Check that ToolCallRecords include agent_name.
+        record_calls = status.record_tool_call.call_args_list
+        assert len(record_calls) > 0
+        for call in record_calls:
+            record = call.args[0]
+            assert record.agent_name == "test-sub-agent"
+
+    @pytest.mark.asyncio
+    async def test_no_prefix_without_agent_name(self) -> None:
+        """Without agent_name, status.update_phase has no prefix."""
+        status = MagicMock()
+        status.update_phase = AsyncMock()
+        status.record_tool_call = AsyncMock()
+
+        agent, _, _ = _make_agent(
+            llm_responses=[_llm_tool(["echo hi"]), _llm_text("Done.")],
+            status=status,
+        )
+        await agent.run("system", "user msg")
+
+        phase_calls = [call.args[0] for call in status.update_phase.call_args_list]
+        # None of the phase updates should have a bracket prefix.
+        assert all("[" not in p for p in phase_calls)

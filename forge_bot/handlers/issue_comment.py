@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 
 from forge_bot.agent import AgentLoop
+from forge_bot.agents.registry import AgentRegistry
+from forge_bot.agents.spawn_tool import SpawnAgentTool
 from forge_bot.container.manager import ContainerManager
 from forge_bot.handlers.base import BaseHandler
 from forge_bot.models import IssueCommentEvent
@@ -55,16 +57,6 @@ class IssueCommentHandler(BaseHandler):
             await status.update_phase("Starting workspace...")
             await container.create()
 
-            system_prompt = self.render_template(
-                "agent_system.j2",
-                repo_full_name=event.repository.full_name,
-                issue_number=issue_num,
-                issue_title=event.issue.title,
-                bot_username=self.bot_username,
-                clone_url=container.clone_url,
-                default_branch=event.repository.default_branch,
-            )
-
             # Build user message with conversation context.
             user_message = await self._build_user_message(owner, repo, issue_num, event)
 
@@ -72,12 +64,64 @@ class IssueCommentHandler(BaseHandler):
             retriever = SmartRetriever(self.llm, context_window=self.settings.llm_context_window)
             search_tool = RetrievalTool(retriever, container)
 
+            # Set up orchestrator with sub-agent support when enabled.
+            extra_tools: list = [search_tool]
+            if self.settings.multi_agent_enabled:
+                registry = AgentRegistry()
+                registry.load_builtin()
+                try:
+                    await registry.load_repo_agents_api(self.api, owner, repo)
+                except Exception:
+                    logger.debug("Repo agent API loading failed (non-critical)", exc_info=True)
+
+                if registry.list_agents():
+                    spawn_tool = SpawnAgentTool(
+                        registry,
+                        self.llm,
+                        container,
+                        self.settings,
+                        [search_tool],
+                        status=status,
+                    )
+                    extra_tools.append(spawn_tool)
+
+                    system_prompt = self.render_template(
+                        "orchestrator_system.j2",
+                        repo_full_name=event.repository.full_name,
+                        issue_number=issue_num,
+                        issue_title=event.issue.title,
+                        bot_username=self.bot_username,
+                        clone_url=container.clone_url,
+                        default_branch=event.repository.default_branch,
+                        agent_descriptions=registry.describe_agents(),
+                    )
+                else:
+                    system_prompt = self.render_template(
+                        "agent_system.j2",
+                        repo_full_name=event.repository.full_name,
+                        issue_number=issue_num,
+                        issue_title=event.issue.title,
+                        bot_username=self.bot_username,
+                        clone_url=container.clone_url,
+                        default_branch=event.repository.default_branch,
+                    )
+            else:
+                system_prompt = self.render_template(
+                    "agent_system.j2",
+                    repo_full_name=event.repository.full_name,
+                    issue_number=issue_num,
+                    issue_title=event.issue.title,
+                    bot_username=self.bot_username,
+                    clone_url=container.clone_url,
+                    default_branch=event.repository.default_branch,
+                )
+
             agent = AgentLoop(
                 self.llm,
                 container,
                 self.settings,
                 status=status,
-                extra_tools=[search_tool],
+                extra_tools=extra_tools,
             )
             reply = await agent.run(system_prompt, user_message)
 

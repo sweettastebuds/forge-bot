@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     rag_max_context_tokens: int = Field(default=4000)
     rag_store_path: str = Field(default="/data/chromadb")
 
+    # --- Multi-agent ---
+    multi_agent_enabled: bool = Field(
+        default=True,
+        description="Enable orchestrator with sub-agent delegation",
+    )
+
     # --- General ---
     webhook_port: int = Field(default=8080)
     log_level: str = Field(default="INFO")

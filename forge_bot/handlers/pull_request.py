@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 
 from forge_bot.agent import AgentLoop
+from forge_bot.agents.registry import AgentRegistry
+from forge_bot.agents.spawn_tool import SpawnAgentTool
 from forge_bot.container.manager import ContainerManager
 from forge_bot.handlers.base import BaseHandler
 from forge_bot.models import PullRequestEvent
@@ -57,8 +59,15 @@ class PullRequestHandler(BaseHandler):
             await status.update_phase("Starting workspace...")
             await container.create()
 
-            system_prompt = self.render_template(
-                "agent_pr_review.j2",
+            user_message = f"Review PR #{pr_num}: {pr.title}"
+
+            # Set up smart retrieval tool.
+            retriever = SmartRetriever(self.llm, context_window=self.settings.llm_context_window)
+            search_tool = RetrievalTool(retriever, container)
+
+            # Set up orchestrator with sub-agent support when enabled.
+            extra_tools: list = [search_tool]
+            pr_template_vars = dict(
                 repo_full_name=event.repository.full_name,
                 pr_number=pr_num,
                 pr_title=pr.title,
@@ -70,18 +79,41 @@ class PullRequestHandler(BaseHandler):
                 default_branch=event.repository.default_branch,
             )
 
-            user_message = f"Review PR #{pr_num}: {pr.title}"
+            if self.settings.multi_agent_enabled:
+                registry = AgentRegistry()
+                registry.load_builtin()
+                try:
+                    await registry.load_repo_agents_api(self.api, owner, repo)
+                except Exception:
+                    logger.debug("Repo agent API loading failed (non-critical)", exc_info=True)
 
-            # Set up smart retrieval tool.
-            retriever = SmartRetriever(self.llm, context_window=self.settings.llm_context_window)
-            search_tool = RetrievalTool(retriever, container)
+                if registry.list_agents():
+                    spawn_tool = SpawnAgentTool(
+                        registry,
+                        self.llm,
+                        container,
+                        self.settings,
+                        [search_tool],
+                        status=status,
+                    )
+                    extra_tools.append(spawn_tool)
+
+                    system_prompt = self.render_template(
+                        "orchestrator_pr_review.j2",
+                        agent_descriptions=registry.describe_agents(),
+                        **pr_template_vars,
+                    )
+                else:
+                    system_prompt = self.render_template("agent_pr_review.j2", **pr_template_vars)
+            else:
+                system_prompt = self.render_template("agent_pr_review.j2", **pr_template_vars)
 
             agent = AgentLoop(
                 self.llm,
                 container,
                 self.settings,
                 status=status,
-                extra_tools=[search_tool],
+                extra_tools=extra_tools,
             )
             review = await agent.run(system_prompt, user_message)
 

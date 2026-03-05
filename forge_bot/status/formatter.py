@@ -22,6 +22,7 @@ class ToolCallRecord:
     result_summary: str
     success: bool
     duration_seconds: float
+    agent_name: str = ""
 
 
 def format_todo_list(todos: list[TodoItem]) -> str:
@@ -46,7 +47,8 @@ def format_tool_call(record: ToolCallRecord) -> str:
     """Format a single tool call record as a markdown list item."""
     icon = "+" if record.success else "x"
     args = abbreviate(record.arguments_summary, 60)
-    line = f"- [{icon}] `{record.tool_name}({args})` ({record.duration_seconds:.1f}s)"
+    agent_prefix = f"[{record.agent_name}] " if record.agent_name else ""
+    line = f"- [{icon}] {agent_prefix}`{record.tool_name}({args})` ({record.duration_seconds:.1f}s)"
     if record.result_summary:
         result = abbreviate(record.result_summary, 100)
         # Escape any markdown in result summary
