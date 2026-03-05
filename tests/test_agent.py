@@ -16,6 +16,7 @@ from forge_bot.agent import (
     _extract_text_tool_call,
     _LoopState,
     _parse_command,
+    _TextToolCall,
     _truncate,
 )
 from forge_bot.tools.base import BaseTool, ToolParameter, ToolResult
@@ -186,7 +187,8 @@ class TestTruncate:
 class TestExtractTextToolCall:
     def test_valid_json(self) -> None:
         text = 'I will run: {"name": "execute", "arguments": {"command": "ls -la"}}'
-        assert _extract_text_tool_call(text) == "ls -la"
+        result = _extract_text_tool_call(text)
+        assert result == _TextToolCall(name="execute", arguments={"command": "ls -la"})
 
     def test_no_match(self) -> None:
         assert _extract_text_tool_call("Just a plain text response.") is None
@@ -199,10 +201,12 @@ class TestExtractTextToolCall:
         text = '{"name": "execute", "arguments": {"command": "echo \\"{}\\""}}'
         result = _extract_text_tool_call(text)
         assert result is not None
+        assert result.name == "execute"
 
     def test_trailing_text(self) -> None:
         text = 'Let me check: {"name": "execute", "arguments": {"command": "pwd"}} and more text'
-        assert _extract_text_tool_call(text) == "pwd"
+        result = _extract_text_tool_call(text)
+        assert result == _TextToolCall(name="execute", arguments={"command": "pwd"})
 
     def test_empty_string(self) -> None:
         assert _extract_text_tool_call("") is None
@@ -210,7 +214,14 @@ class TestExtractTextToolCall:
     def test_arguments_as_string(self) -> None:
         text = '{"name": "execute", "arguments": "{\\"command\\": \\"ls\\"}"}'
         result = _extract_text_tool_call(text)
-        assert result == "ls"
+        assert result == _TextToolCall(name="execute", arguments={"command": "ls"})
+
+    def test_non_execute_tool(self) -> None:
+        text = '{"name": "smart_search", "arguments": {"query": "auth module"}}'
+        result = _extract_text_tool_call(text)
+        assert result is not None
+        assert result.name == "smart_search"
+        assert result.arguments == {"query": "auth module"}
 
 
 class TestLoopState:
@@ -538,6 +549,64 @@ class TestTextToolCallDetection:
         # The 4th attempt should return the raw text since cap is reached
         assert reply == jsons[3]
         assert container.exec.await_count == 3
+
+
+class TestTextEmbeddedExtraTools:
+    @pytest.mark.asyncio
+    async def test_text_embedded_extra_tool_dispatched(self) -> None:
+        """Text-embedded extra tool calls are dispatched via _dispatch_extra_tool."""
+        text_with_json = 'Let me search: {"name": "fake_search", "arguments": {"query": "auth"}}'
+        fake_tool = _FakeTool(result="Found auth module.")
+        agent, llm, container = _make_agent(
+            llm_responses=[
+                _llm_text(text_with_json),
+                _llm_text("Auth uses JWT based on search results."),
+            ],
+            extra_tools=[fake_tool],
+        )
+        reply = await agent.run("system prompt", "explain auth")
+        assert reply == "Auth uses JWT based on search results."
+        # execute should NOT have been called
+        container.exec.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_text_embedded_extra_tool_capped(self) -> None:
+        """Text-embedded extra tool calls are subject to the same 3-call cap."""
+        jsons = [
+            '{"name": "fake_search", "arguments": {"query": "q1"}}',
+            '{"name": "fake_search", "arguments": {"query": "q2"}}',
+            '{"name": "fake_search", "arguments": {"query": "q3"}}',
+            '{"name": "fake_search", "arguments": {"query": "q4"}}',
+        ]
+        fake_tool = _FakeTool(result="result")
+        agent, llm, container = _make_agent(
+            llm_responses=[
+                _llm_text(jsons[0]),
+                _llm_text(jsons[1]),
+                _llm_text(jsons[2]),
+                _llm_text(jsons[3]),  # 4th -- returned as text
+            ],
+            extra_tools=[fake_tool],
+        )
+        reply = await agent.run("system prompt", "test cap")
+        assert reply == jsons[3]
+
+    @pytest.mark.asyncio
+    async def test_text_embedded_mixed_tools(self) -> None:
+        """Text-embedded calls to both execute and extra tools work in the same session."""
+        fake_tool = _FakeTool(result="search result")
+        agent, llm, container = _make_agent(
+            llm_responses=[
+                _llm_text('{"name": "execute", "arguments": {"command": "ls"}}'),
+                _llm_text('{"name": "fake_search", "arguments": {"query": "auth"}}'),
+                _llm_text("Final answer."),
+            ],
+            exec_result=_FakeExecResult(stdout="file1.py"),
+            extra_tools=[fake_tool],
+        )
+        reply = await agent.run("system prompt", "test")
+        assert reply == "Final answer."
+        container.exec.assert_awaited_once()
 
 
 class TestExtraTools:
