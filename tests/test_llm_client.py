@@ -80,3 +80,19 @@ async def test_chat_handles_empty_content(settings: Settings):
         await client.close()
 
     assert result == ""
+
+
+async def test_chat_handles_empty_choices(settings: Settings):
+    """LLM returning empty choices returns empty string."""
+    resp = MagicMock()
+    resp.choices = []
+    mock_create = AsyncMock(return_value=resp)
+    with patch("forge_bot.clients.llm.AsyncOpenAI") as mock_cls:
+        mock_cls.return_value.chat.completions.create = mock_create
+        mock_cls.return_value.close = AsyncMock()
+
+        client = LLMClient(settings)
+        result = await client.chat("sys", "usr")
+        await client.close()
+
+    assert result == ""

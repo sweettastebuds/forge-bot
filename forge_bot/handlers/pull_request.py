@@ -23,7 +23,11 @@ class PullRequestHandler(BaseHandler):
     """Review PRs using the agent loop with a workspace container."""
 
     async def handle(self, event: PullRequestEvent) -> None:
-        owner, repo = event.repository.full_name.split("/", 1)
+        full_name = event.repository.full_name
+        if "/" not in full_name:
+            logger.error("Invalid repository full_name: %s", full_name)
+            return
+        owner, repo = full_name.split("/", 1)
         pr = event.pull_request
         pr_num = pr.number
 

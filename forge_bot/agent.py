@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import shlex
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -227,6 +229,10 @@ class AgentLoop:
                 logger.exception("chat_with_tools failed (round %d)", round_num)
                 return await self._fallback(system_prompt, user_message)
 
+            if not response.choices:
+                logger.warning("LLM returned empty choices (round %d)", round_num)
+                return await self._fallback(system_prompt, user_message)
+
             msg = response.choices[0].message
 
             # No tool calls -- check for text-embedded tool calls or final response
@@ -290,7 +296,12 @@ class AgentLoop:
                 name = name.strip()
                 if not name:
                     continue
-                content = await self._container.exec(f"cat '{_ARTIFACTS_DIR}/{name}'", timeout=10)
+                # Strip directory components to prevent path traversal
+                name = os.path.basename(name)
+                if not name:
+                    continue
+                safe_path = shlex.quote(f"{_ARTIFACTS_DIR}/{name}")
+                content = await self._container.exec(f"cat {safe_path}", timeout=10)
                 if content.exit_code == 0:
                     artifacts.append((name, content.stdout.encode()))
             return artifacts
@@ -531,6 +542,8 @@ class AgentLoop:
                 messages=call_messages,
                 tools=[],
             )
+            if not response.choices:
+                return "I was unable to complete my analysis. Please try again."
             return response.choices[0].message.content or ""
         except Exception:
             logger.exception("Force-final LLM call failed")

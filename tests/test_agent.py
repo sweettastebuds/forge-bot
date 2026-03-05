@@ -353,6 +353,17 @@ class TestAgentLoopRun:
         llm.chat.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_empty_choices_fallback(self) -> None:
+        """LLM returning empty choices falls back to simple chat."""
+        empty_response = SimpleNamespace(choices=[])
+        agent, llm, _ = _make_agent(
+            llm_responses=[empty_response],
+        )
+        reply = await agent.run("system prompt", "test")
+        assert reply == "Fallback answer."
+        llm.chat.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_total_failure(self) -> None:
         """Both tool and fallback fail -- canned error message."""
         llm = AsyncMock()
@@ -666,6 +677,31 @@ class TestCollectArtifacts:
         assert len(result) == 2
         assert result[0][0] == "report.txt"
         assert result[0][1] == b"Report content"
+
+    @pytest.mark.asyncio
+    async def test_collect_artifacts_path_traversal_blocked(self) -> None:
+        """Path traversal in artifact names is stripped by os.path.basename."""
+        agent, _, container = _make_agent()
+        captured_commands: list[str] = []
+
+        async def mock_exec(command, timeout=60, **kw):
+            captured_commands.append(command)
+            if "ls " in command:
+                return _FakeExecResult(stdout="../etc/passwd\nnormal.txt")
+            if command.startswith("cat "):
+                return _FakeExecResult(stdout="safe content")
+            return _FakeExecResult()
+
+        container.exec = AsyncMock(side_effect=mock_exec)
+        agent._read_notes = AsyncMock(return_value="")
+        result = await agent.collect_artifacts()
+
+        # Path traversal (../) should be stripped by os.path.basename
+        cat_commands = [c for c in captured_commands if c.startswith("cat ")]
+        for cmd in cat_commands:
+            assert "../" not in cmd
+        # Both files should be collected (basename-stripped)
+        assert len(result) == 2
 
 
 class TestContextTrimming:

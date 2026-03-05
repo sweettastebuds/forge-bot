@@ -154,6 +154,10 @@ class Level3Agent:
                 logger.exception("Level-3 LLM call failed at hop %d", hop_num)
                 break
 
+            if not response.choices:
+                logger.warning("Level-3 LLM returned empty choices at hop %d", hop_num)
+                break
+
             message = response.choices[0].message
 
             # If no tool calls, the agent is done reasoning.

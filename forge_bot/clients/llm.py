@@ -51,6 +51,9 @@ class LLMClient:
                 temperature=temperature if temperature is not None else self._temperature,
                 max_tokens=max_tokens or self._max_tokens,
             )
+            if not response.choices:
+                logger.warning("LLM returned empty choices")
+                return ""
             content = response.choices[0].message.content or ""
             logger.debug("LLM response: %d chars", len(content))
             return content

@@ -246,3 +246,18 @@ class TestHandleFlow:
             await handler.handle(pr_event)
 
         mock_status.attach_file.assert_awaited_once_with("diff.patch", b"patch content")
+
+    @pytest.mark.asyncio
+    async def test_invalid_full_name_returns_early(
+        self,
+        sample_pr_payload: dict,
+    ) -> None:
+        """Handler returns early if full_name has no '/' separator."""
+        sample_pr_payload["repository"]["full_name"] = "noslash"
+        event = PullRequestEvent.model_validate(sample_pr_payload)
+        handler, api, _ = _make_handler()
+
+        await handler.handle(event)
+
+        # Should not have attempted to post any comment
+        api.call.assert_not_awaited()
