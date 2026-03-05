@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import ClassVar
 
 
 @dataclass
@@ -32,9 +33,9 @@ class BaseTool(ABC):
     attributes and implement ``execute()``.
     """
 
-    name: str = ""
-    description: str = ""
-    parameters: list[ToolParameter] = field(default_factory=list)
+    name: ClassVar[str] = ""
+    description: ClassVar[str] = ""
+    parameters: ClassVar[list[ToolParameter]] = []
 
     @abstractmethod
     async def execute(self, **kwargs: object) -> ToolResult:
