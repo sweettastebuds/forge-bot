@@ -43,21 +43,22 @@ def test_should_skip_pycache():
 
 
 @pytest.mark.asyncio
-async def test_ingest_repo(mock_forge, mock_embedder):
+async def test_ingest_repo(mock_api_client, mock_embedder):
     """Full ingestion should fetch files, chunk, embed, and store."""
     chunker = Chunker(chunk_size=500, overlap=50)
     store = MagicMock()
     collection = MagicMock()
     store.get_or_create_collection.return_value = collection
 
-    ingester = Ingester(mock_forge, chunker, mock_embedder, store)
+    ingester = Ingester(mock_api_client, chunker, mock_embedder, store)
     count = await ingester.ingest_repo("owner", "repo", "main")
 
-    # Should have fetched tree
-    mock_forge.get_repo_tree.assert_called_once_with("owner", "repo", ref="main")
+    # Should have called get_repo_tree
+    mock_api_client.call.assert_any_call("get_repo_tree", owner="owner", repo="repo", ref="main")
 
     # Should have fetched eligible files (skipping vendor/ and .png)
-    assert mock_forge.get_file_content.call_count >= 3  # README, main.py, utils.py, test_main.py
+    file_calls = [c for c in mock_api_client.call.call_args_list if c.args[0] == "get_file_content"]
+    assert len(file_calls) >= 3  # README, main.py, utils.py, test_main.py
 
     # Should have stored chunks
     assert count > 0
@@ -66,73 +67,98 @@ async def test_ingest_repo(mock_forge, mock_embedder):
 
 
 @pytest.mark.asyncio
-async def test_ingest_skips_binaries(mock_forge):
+async def test_ingest_skips_binaries(mock_api_client):
     """Binary files (.png) should be filtered out."""
-    mock_forge.get_repo_tree.return_value = [
-        {"path": "image.png", "type": "blob"},
-        {"path": "video.mp4", "type": "blob"},
-    ]
+
+    async def _call(endpoint_name, **params):
+        if endpoint_name == "get_repo_tree":
+            return {
+                "tree": [
+                    {"path": "image.png", "type": "blob"},
+                    {"path": "video.mp4", "type": "blob"},
+                ]
+            }
+        raise ValueError(f"Unmocked endpoint: {endpoint_name}")
+
+    mock_api_client.call = AsyncMock(side_effect=_call)
 
     chunker = Chunker()
     embedder = AsyncMock()
     store = MagicMock()
 
-    ingester = Ingester(mock_forge, chunker, embedder, store)
+    ingester = Ingester(mock_api_client, chunker, embedder, store)
     count = await ingester.ingest_repo("owner", "repo", "main")
 
     assert count == 0
-    mock_forge.get_file_content.assert_not_called()
+    file_calls = [c for c in mock_api_client.call.call_args_list if c.args[0] == "get_file_content"]
+    assert len(file_calls) == 0
 
 
 @pytest.mark.asyncio
-async def test_ingest_skips_vendor(mock_forge):
+async def test_ingest_skips_vendor(mock_api_client):
     """Vendor directories should be filtered out."""
-    mock_forge.get_repo_tree.return_value = [
-        {"path": "vendor/lib.js", "type": "blob"},
-        {"path": "node_modules/express/index.js", "type": "blob"},
-    ]
+
+    async def _call(endpoint_name, **params):
+        if endpoint_name == "get_repo_tree":
+            return {
+                "tree": [
+                    {"path": "vendor/lib.js", "type": "blob"},
+                    {"path": "node_modules/express/index.js", "type": "blob"},
+                ]
+            }
+        raise ValueError(f"Unmocked endpoint: {endpoint_name}")
+
+    mock_api_client.call = AsyncMock(side_effect=_call)
 
     chunker = Chunker()
     embedder = AsyncMock()
     store = MagicMock()
 
-    ingester = Ingester(mock_forge, chunker, embedder, store)
+    ingester = Ingester(mock_api_client, chunker, embedder, store)
     count = await ingester.ingest_repo("owner", "repo", "main")
 
     assert count == 0
-    mock_forge.get_file_content.assert_not_called()
+    file_calls = [c for c in mock_api_client.call.call_args_list if c.args[0] == "get_file_content"]
+    assert len(file_calls) == 0
 
 
 @pytest.mark.asyncio
-async def test_ingest_skips_large_files(mock_forge):
+async def test_ingest_skips_large_files(mock_api_client):
     """Files exceeding 100KB should be skipped."""
-    mock_forge.get_repo_tree.return_value = [
-        {"path": "big.py", "type": "blob"},
-    ]
-    # Return a file that exceeds _MAX_FILE_SIZE
-    mock_forge.get_file_content.return_value = "x" * 200_000
+
+    async def _call(endpoint_name, **params):
+        if endpoint_name == "get_repo_tree":
+            return {"tree": [{"path": "big.py", "type": "blob"}]}
+        elif endpoint_name == "get_file_content":
+            return "x" * 200_000
+        raise ValueError(f"Unmocked endpoint: {endpoint_name}")
+
+    mock_api_client.call = AsyncMock(side_effect=_call)
 
     chunker = Chunker()
     embedder = AsyncMock()
     store = MagicMock()
 
-    ingester = Ingester(mock_forge, chunker, embedder, store)
+    ingester = Ingester(mock_api_client, chunker, embedder, store)
     count = await ingester.ingest_repo("owner", "repo", "main")
 
     assert count == 0
 
 
 @pytest.mark.asyncio
-async def test_ingest_files_selective(mock_forge, mock_embedder):
+async def test_ingest_files_selective(mock_api_client, mock_embedder):
     """Selective file re-indexing should delete old chunks first."""
     chunker = Chunker(chunk_size=500, overlap=50)
     store = MagicMock()
     collection = MagicMock()
     store.get_or_create_collection.return_value = collection
 
-    ingester = Ingester(mock_forge, chunker, mock_embedder, store)
+    ingester = Ingester(mock_api_client, chunker, mock_embedder, store)
     count = await ingester.ingest_files(
-        "owner", "repo", "main", ["src/main.py"],
+        "owner",
+        "repo",
+        "main",
+        ["src/main.py"],
     )
 
     # Should have deleted old chunks for the file

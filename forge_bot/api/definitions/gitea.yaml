@@ -1,0 +1,488 @@
+version: "1"
+base_path: "/api/v1"
+
+endpoints:
+
+  # --- Identity ---
+  - name: get_authenticated_user
+    method: GET
+    path: /user
+    description: "Get the authenticated user's information (bot identity)"
+    tags: [user, identity, self, whoami]
+    params: []
+    response_type: json
+
+  # --- Repository ---
+  - name: get_repo
+    method: GET
+    path: /repos/{owner}/{repo}
+    description: "Get repository metadata including default branch, description, visibility"
+    tags: [repo, repository, metadata, info]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+        description: "Repository owner"
+      - name: repo
+        type: string
+        location: path
+        required: true
+        description: "Repository name"
+    response_type: json
+
+  # --- File content (raw text) ---
+  - name: get_file_content
+    method: GET
+    path: /repos/{owner}/{repo}/raw/{filepath}
+    description: "Get raw file content from the repository at a specific ref"
+    tags: [file, content, raw, read, source]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: filepath
+        type: string
+        location: path
+        required: true
+        description: "File path relative to repo root (e.g. src/main.py)"
+      - name: ref
+        type: string
+        location: query
+        required: false
+        description: "Branch name or commit SHA (defaults to repo default branch)"
+    response_type: text
+    headers:
+      Accept: "text/plain"
+
+  # --- Git tree ---
+  - name: get_repo_tree
+    method: GET
+    path: /repos/{owner}/{repo}/git/trees/{ref}
+    description: "Get repository file tree at a specific ref (branch or SHA)"
+    tags: [tree, files, directory, listing, structure]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: ref
+        type: string
+        location: path
+        required: true
+        description: "Branch name or commit SHA"
+      - name: recursive
+        type: boolean
+        location: query
+        required: false
+        default: true
+        description: "Whether to recurse into subdirectories"
+    response_type: json
+
+  # --- Issue comments ---
+  - name: get_issue_comments
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}/comments
+    description: "List all comments on an issue or pull request"
+    tags: [comment, list, issue, pr, thread, conversation]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: index
+        type: integer
+        location: path
+        required: true
+        description: "Issue or PR number"
+    response_type: json
+
+  # --- Post comment ---
+  - name: post_issue_comment
+    method: POST
+    path: /repos/{owner}/{repo}/issues/{index}/comments
+    description: "Post a comment on an issue or pull request"
+    tags: [comment, post, issue, pr, reply, write]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: index
+        type: integer
+        location: path
+        required: true
+        description: "Issue or PR number"
+      - name: body
+        type: string
+        location: body
+        required: true
+        description: "Comment body (markdown)"
+    response_type: json
+
+  # --- Edit comment ---
+  - name: edit_issue_comment
+    method: PATCH
+    path: /repos/{owner}/{repo}/issues/comments/{id}
+    description: "Edit an existing comment on an issue or pull request"
+    tags: [comment, edit, update, modify]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: id
+        type: integer
+        location: path
+        required: true
+        description: "Comment ID (not issue number)"
+      - name: body
+        type: string
+        location: body
+        required: true
+        description: "Updated comment body (markdown)"
+    response_type: json
+
+  # --- Pull request diff ---
+  - name: get_pull_diff
+    method: GET
+    path: /repos/{owner}/{repo}/pulls/{index}.diff
+    description: "Get the unified diff for a pull request"
+    tags: [pull, pr, diff, review, changes]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: index
+        type: integer
+        location: path
+        required: true
+        description: "Pull request number"
+    response_type: text
+    headers:
+      Accept: "text/plain"
+
+  # --- Pull request files ---
+  - name: get_pull_files
+    method: GET
+    path: /repos/{owner}/{repo}/pulls/{index}/files
+    description: "List changed files in a pull request with additions/deletions stats"
+    tags: [pull, pr, files, changes, diff]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: index
+        type: integer
+        location: path
+        required: true
+        description: "Pull request number"
+    response_type: json
+
+  # --- Create pull request ---
+  - name: create_pull_request
+    method: POST
+    path: /repos/{owner}/{repo}/pulls
+    description: "Create a new pull request"
+    tags: [pull, pr, create, merge, request]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: title
+        type: string
+        location: body
+        required: true
+        description: "Pull request title"
+      - name: body
+        type: string
+        location: body
+        required: false
+        description: "PR description (markdown)"
+      - name: head
+        type: string
+        location: body
+        required: true
+        description: "Source branch name"
+      - name: base
+        type: string
+        location: body
+        required: true
+        description: "Target branch name"
+    response_type: json
+
+  # --- Git commits ---
+  - name: get_commit
+    method: GET
+    path: /repos/{owner}/{repo}/git/commits/{sha}
+    description: "Get information about a specific commit by SHA"
+    tags: [commit, git, history, sha]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: sha
+        type: string
+        location: path
+        required: true
+        description: "Full or abbreviated commit SHA"
+    response_type: json
+
+  # --- Branches ---
+  - name: list_branches
+    method: GET
+    path: /repos/{owner}/{repo}/branches
+    description: "List branches in a repository"
+    tags: [branch, branches, list, git]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+    response_type: json
+
+  # --- Create branch ---
+  - name: create_branch
+    method: POST
+    path: /repos/{owner}/{repo}/branches
+    description: "Create a new branch in the repository"
+    tags: [branch, create, git]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: new_branch_name
+        type: string
+        location: body
+        required: true
+        description: "Name of the new branch"
+      - name: old_branch_name
+        type: string
+        location: body
+        required: false
+        description: "Source branch (defaults to default branch)"
+    response_type: json
+
+  # --- Issue labels ---
+  - name: get_issue_labels
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}/labels
+    description: "List labels on an issue"
+    tags: [label, issue, tag, category]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: index
+        type: integer
+        location: path
+        required: true
+        description: "Issue number"
+    response_type: json
+
+  - name: add_issue_labels
+    method: POST
+    path: /repos/{owner}/{repo}/issues/{index}/labels
+    description: "Add labels to an issue"
+    tags: [label, issue, add, tag]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: index
+        type: integer
+        location: path
+        required: true
+        description: "Issue number"
+      - name: labels
+        type: array
+        location: body
+        required: true
+        description: "Array of label IDs to add"
+    response_type: json
+
+  # --- Create/update file (commit via API) ---
+  - name: create_file
+    method: POST
+    path: /repos/{owner}/{repo}/contents/{filepath}
+    description: "Create or update a file in the repository (creates a commit)"
+    tags: [file, create, write, commit, content]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: filepath
+        type: string
+        location: path
+        required: true
+        description: "File path relative to repo root"
+      - name: content
+        type: string
+        location: body
+        required: true
+        description: "Base64-encoded file content"
+      - name: message
+        type: string
+        location: body
+        required: true
+        description: "Commit message"
+      - name: branch
+        type: string
+        location: body
+        required: false
+        description: "Branch to commit to (defaults to default branch)"
+    response_type: json
+
+  # --- Get issue ---
+  - name: get_issue
+    method: GET
+    path: /repos/{owner}/{repo}/issues/{index}
+    description: "Get a single issue by number"
+    tags: [issue, get, detail]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: index
+        type: integer
+        location: path
+        required: true
+        description: "Issue number"
+    response_type: json
+
+  # --- Get pull request ---
+  - name: get_pull_request
+    method: GET
+    path: /repos/{owner}/{repo}/pulls/{index}
+    description: "Get a single pull request by number"
+    tags: [pull, pr, get, detail]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: index
+        type: integer
+        location: path
+        required: true
+        description: "Pull request number"
+    response_type: json
+
+  # --- Comment attachments ---
+  - name: upload_comment_attachment
+    method: POST
+    path: /repos/{owner}/{repo}/issues/comments/{id}/assets
+    description: "Upload a file attachment to an issue comment"
+    tags: [attachment, comment, upload, file]
+    content_type: multipart/form-data
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+      - name: id
+        type: integer
+        location: path
+        required: true
+        description: "Comment ID"
+      - name: attachment
+        type: file
+        location: form
+        required: true
+        description: "File to upload"
+    response_type: json
+
+  # --- Search code ---
+  - name: search_code
+    method: GET
+    path: /repos/{owner}/{repo}/topics
+    description: "List repository topics/tags"
+    tags: [topics, tags, search]
+    params:
+      - name: owner
+        type: string
+        location: path
+        required: true
+      - name: repo
+        type: string
+        location: path
+        required: true
+    response_type: json

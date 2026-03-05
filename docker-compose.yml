@@ -5,28 +5,16 @@ services:
     restart: unless-stopped
     ports:
       - "${WEBHOOK_PORT:-8080}:8080"
+    env_file:
+      - .env
     environment:
-      - FORGE_INSTANCE_URL=${FORGE_INSTANCE_URL}
-      - FORGE_API_TOKEN=${FORGE_API_TOKEN}
-      - FORGE_WEBHOOK_SECRET=${FORGE_WEBHOOK_SECRET}
-      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.openai.com/v1}
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_MODEL=${LLM_MODEL:-gpt-4o}
-      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.2}
-      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-4096}
-      - LLM_MAX_CONCURRENT=${LLM_MAX_CONCURRENT:-3}
+      # Docker-in-Docker connection
       - DOCKER_HOST=tcp://dind:2376
       - DOCKER_TLS_VERIFY=1
-      - DOCKER_CERT_PATH=/certs/client
-      - SANDBOX_ENABLED=${SANDBOX_ENABLED:-true}
-      - SANDBOX_PREPULL_IMAGES=${SANDBOX_PREPULL_IMAGES:-python,node}
-      - RAG_ENABLED=${RAG_ENABLED:-false}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DOCKER_CERT_PATH=/certs/client/client
     volumes:
       - forge-data:/data
       - dind-certs:/certs/client:ro
-      # Optional: custom sandbox image registry
-      # - ./sandbox-images.json:/app/config/sandbox-images.json:ro
     depends_on:
       dind:
         condition: service_healthy
@@ -38,6 +26,7 @@ services:
     restart: unless-stopped
     environment:
       - DOCKER_TLS_CERTDIR=/certs
+      - DOCKER_TLS_SAN=DNS:dind
     volumes:
       - dind-certs:/certs
       - dind-storage:/var/lib/docker
@@ -47,19 +36,7 @@ services:
       timeout: 5s
       retries: 3
 
-  # Enable with: docker compose --profile local-llm up -d
-  ollama:
-    image: ollama/ollama:latest
-    container_name: forge-bot-ollama
-    profiles: ["local-llm"]
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama-models:/root/.ollama
-
 volumes:
   forge-data:
   dind-certs:
   dind-storage:
-  ollama-models:

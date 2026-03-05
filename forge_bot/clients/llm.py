@@ -1,7 +1,10 @@
 """Thin async wrapper around the OpenAI-compatible chat completions API."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
+from typing import Any
 
 from openai import AsyncOpenAI
 
@@ -51,6 +54,30 @@ class LLMClient:
             content = response.choices[0].message.content or ""
             logger.debug("LLM response: %d chars", len(content))
             return content
+
+    async def chat_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> Any:
+        """Send a chat completion with tool definitions.
+
+        Returns the raw response object so callers can inspect tool_calls.
+        """
+        async with self._semaphore:
+            kwargs: dict[str, Any] = {
+                "model": self._model,
+                "messages": messages,
+                "temperature": temperature if temperature is not None else self._temperature,
+                "max_tokens": max_tokens or self._max_tokens,
+            }
+            if tools:
+                kwargs["tools"] = tools
+            response = await self._client.chat.completions.create(**kwargs)
+            return response
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

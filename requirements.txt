@@ -11,5 +11,8 @@ openai>=1.60.0
 # Templating
 jinja2>=3.1.0
 
+# API definitions
+pyyaml>=6.0
+
 # Docker (sandbox)
 docker>=7.0.0

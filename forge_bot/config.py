@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     forge_instance_url: str = Field(description="Base URL of Gitea/Forgejo instance")
     forge_api_token: str = Field(description="Bot account API token")
     forge_webhook_secret: str = Field(description="HMAC secret for webhook verification")
+    forge_provider: str = Field(
+        default="gitea",
+        description="API provider: 'gitea' or 'forgejo'",
+    )
 
     # --- LLM connection ---
     llm_api_key: str = Field(description="API key for the LLM endpoint")
@@ -28,18 +32,18 @@ class Settings(BaseSettings):
         " — controls conversation trimming and context budgets",
     )
 
-    # --- Sandbox ---
-    sandbox_enabled: bool = Field(default=True)
-    sandbox_timeout: int = Field(default=60, description="Max execution time in seconds")
-    sandbox_memory: str = Field(default="512m")
-    sandbox_cpus: float = Field(default=1.0)
-    sandbox_prepull_images: str = Field(
-        default="python,node",
-        description="Comma-separated image keys to pre-pull, or 'all'/'none'",
+    # --- Container / Sandbox ---
+    container_enabled: bool = Field(default=True)
+    container_timeout: int = Field(default=150, description="Max execution time in seconds")
+    container_memory: str = Field(default="512m")
+    container_cpus: float = Field(default=1.0)
+    container_workspace_image: str = Field(
+        default="forge-bot-workspace:latest",
+        description="Docker image for per-event workspace containers",
     )
-    sandbox_images_file: str = Field(
-        default="",
-        description="Path to custom sandbox-images.json override",
+    container_network_enabled: bool = Field(
+        default=True,
+        description="Allow network access in workspace containers",
     )
 
     # --- RAG (optional) ---

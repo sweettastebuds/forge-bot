@@ -1,867 +1,358 @@
-"""Tests for forge_bot.handlers.issue_comment."""
+"""Tests for the IssueCommentHandler lifecycle."""
 
-from unittest.mock import AsyncMock
+from __future__ import annotations
 
-import httpx
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
-from forge_bot.config import Settings
-from forge_bot.handlers.issue_comment import (
-    IssueCommentHandler,
-    _context_limits,
-    _extract_attachments,
-    _extract_commit_shas,
-    _extract_file_paths,
-    _get_extension,
-    _parse_fetch_request,
-)
-from forge_bot.models import IssueCommentEvent
+from forge_bot.handlers.issue_comment import IssueCommentHandler
 
-# --- Fixtures ---
-
-
-@pytest.fixture
-def settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
-    monkeypatch.setenv("FORGE_INSTANCE_URL", "https://gitea.example.com")
-    monkeypatch.setenv("FORGE_API_TOKEN", "test-token")
-    monkeypatch.setenv("FORGE_WEBHOOK_SECRET", "test-secret")
-    monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
-    return Settings()
-
-
-@pytest.fixture
-def comment_event(sample_comment_payload: dict) -> IssueCommentEvent:
-    return IssueCommentEvent.model_validate(sample_comment_payload)
-
-
-@pytest.fixture
-def mock_forge():
-    forge = AsyncMock()
-    forge.get_issue_comments.return_value = [
-        {
-            "id": 1,
-            "body": "I need help understanding the auth flow.",
-            "user": {"login": "developer"},
-            "created_at": "2026-01-01T00:00:00Z",
-        },
-        {
-            "id": 2,
-            "body": "@forge-bot what does this function do?",
-            "user": {"login": "developer"},
-            "created_at": "2026-01-01T00:01:00Z",
-        },
-    ]
-    forge.post_comment.return_value = {"id": 3, "body": "LLM says hi"}
-    forge.get_repo_tree.return_value = [
-        {"path": "src/main.py", "type": "blob", "size": 100},
-        {"path": "README.md", "type": "blob", "size": 50},
-        {"path": "src", "type": "tree"},
-    ]
-    # By default, file content fetch fails (no files referenced in default fixture).
-    forge.get_file_content.return_value = "# Project\nSample content."
-    forge.get_commit.side_effect = httpx.HTTPStatusError(
-        "Not Found",
-        request=httpx.Request("GET", "http://x"),
-        response=httpx.Response(404),
-    )
-    forge.download_url.side_effect = httpx.HTTPStatusError(
-        "Not Found",
-        request=httpx.Request("GET", "http://x"),
-        response=httpx.Response(404),
-    )
-    return forge
-
-
-@pytest.fixture
-def mock_llm():
-    llm = AsyncMock()
-    llm.chat.return_value = "Here is my explanation of the auth flow."
-    return llm
+# -- Helpers -----------------------------------------------------------------
 
 
 def _make_event(
-    comment_body: str = "@forge-bot hello",
-    issue_body: str = "",
+    *,
+    body: str = "Hey @bot what does this repo do?",
+    repo_full_name: str = "owner/repo",
+    issue_number: int = 1,
     default_branch: str = "main",
-) -> IssueCommentEvent:
-    """Helper to create a minimal IssueCommentEvent."""
-    return IssueCommentEvent.model_validate({
-        "action": "created",
-        "comment": {
-            "id": 1,
-            "body": comment_body,
-            "user": {"id": 1, "login": "developer"},
-        },
-        "issue": {
-            "number": 5,
-            "title": "Question",
-            "body": issue_body,
-            "pull_request": None,
-            "assignees": [],
-        },
-        "is_pull": False,
-        "repository": {
-            "full_name": "owner/repo",
-            "default_branch": default_branch,
-        },
-        "sender": {"id": 1, "login": "developer"},
-    })
-
-
-# --- Core handler tests ---
-
-
-async def test_handle_fetches_comments_and_posts_reply(
-    comment_event: IssueCommentEvent,
-    mock_forge: AsyncMock,
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(comment_event)
-
-    mock_forge.get_issue_comments.assert_awaited_once_with("owner", "repo", 5)
-    mock_llm.chat.assert_awaited_once()
-
-    call_args = mock_llm.chat.call_args
-    system_prompt = call_args.args[0]
-    user_message = call_args.args[1]
-    assert "owner/repo" in system_prompt
-    assert "#5" in system_prompt
-    assert user_message == "@forge-bot what does this function do?"
-
-    mock_forge.post_comment.assert_awaited_once_with(
-        "owner", "repo", 5, "Here is my explanation of the auth flow."
+    clone_url: str = "https://gitea.example.com/owner/repo.git",
+    sender: str = "alice",
+    issue_title: str = "Test issue",
+    issue_body: str = "",
+    comment_id: int = 100,
+) -> Any:
+    return SimpleNamespace(
+        action="created",
+        comment=SimpleNamespace(body=body, id=comment_id),
+        issue=SimpleNamespace(
+            number=issue_number,
+            title=issue_title,
+            body=issue_body,
+        ),
+        repository=SimpleNamespace(
+            full_name=repo_full_name,
+            default_branch=default_branch,
+            clone_url=clone_url,
+        ),
+        sender=SimpleNamespace(login=sender),
     )
 
 
-async def test_handle_posts_error_message_on_llm_failure(
-    comment_event: IssueCommentEvent,
-    mock_forge: AsyncMock,
-    settings: Settings,
-):
-    mock_llm = AsyncMock()
-    mock_llm.chat.side_effect = RuntimeError("LLM is down")
+def _make_handler() -> tuple[IssueCommentHandler, MagicMock, AsyncMock]:
+    api = MagicMock()
+    api.call = AsyncMock(return_value={"id": 1})
 
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(comment_event)
+    llm = AsyncMock()
+    llm.chat_with_tools = AsyncMock()
+    llm.chat = AsyncMock(return_value="Fallback")
 
-    mock_forge.post_comment.assert_awaited_once()
-    posted_body = mock_forge.post_comment.call_args.args[3]
-    assert "error" in posted_body.lower()
+    settings = MagicMock()
+    settings.forge_api_token = "test-token"
+    settings.forge_instance_url = "https://gitea.example.com"
+    settings.container_network_enabled = True
+    settings.llm_context_window = 8192
 
-
-async def test_handle_logs_on_post_comment_failure(
-    comment_event: IssueCommentEvent,
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.return_value = []
-    mock_forge.post_comment.side_effect = RuntimeError("API error")
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(comment_event)
-    mock_forge.post_comment.assert_awaited_once()
-
-
-# --- Repo tree tests ---
-
-
-async def test_handle_includes_repo_tree_in_prompt(
-    comment_event: IssueCommentEvent,
-    mock_forge: AsyncMock,
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(comment_event)
-
-    # default_branch in sample_comment_payload is "master"
-    mock_forge.get_repo_tree.assert_awaited_once_with(
-        "owner", "repo", ref="master"
+    handler = IssueCommentHandler(
+        api_client=api,
+        llm_client=llm,
+        settings=settings,
+        bot_username="bot",
     )
-
-    system_prompt = mock_llm.chat.call_args.args[0]
-    assert "src/main.py" in system_prompt
-    assert "README.md" in system_prompt
+    return handler, api, llm
 
 
-async def test_fetch_repo_tree_uses_default_branch(
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    """_fetch_repo_tree passes the repo's default_branch to the API."""
-    event = _make_event(default_branch="develop")
+def _mock_status() -> MagicMock:
+    status = MagicMock()
+    status.post_initial_status = AsyncMock()
+    status.update_phase = AsyncMock()
+    status.record_tool_call = AsyncMock()
+    status.post_response = AsyncMock()
+    status.finalize_status = AsyncMock()
+    status.update_todos = AsyncMock()
+    status.attach_file = AsyncMock()
+    status.todos = []
+    return status
 
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.return_value = [
-        {"path": "README.md", "type": "blob", "size": 50},
-    ]
-    mock_forge.get_file_content.return_value = "# Hello"
-    mock_forge.post_comment.return_value = {"id": 10}
 
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
+def _mock_container() -> MagicMock:
+    container = MagicMock()
+    container.create = AsyncMock()
+    container.destroy = AsyncMock()
+    container.exec = AsyncMock()
+    container.clone_url = "https://token@gitea.example.com/owner/repo.git"
+    container.default_branch = "main"
+    return container
 
-    mock_forge.get_repo_tree.assert_awaited_once_with(
-        "owner", "repo", ref="develop"
+
+def _patches():
+    """Return context managers that patch SmartRetriever and RetrievalTool."""
+    return (
+        patch("forge_bot.handlers.issue_comment.SmartRetriever"),
+        patch("forge_bot.handlers.issue_comment.RetrievalTool"),
     )
 
 
-async def test_handle_gracefully_handles_tree_failure(
-    comment_event: IssueCommentEvent,
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.side_effect = RuntimeError("API down")
-    mock_forge.get_file_content.side_effect = RuntimeError("API down")
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(comment_event)
-
-    mock_forge.post_comment.assert_awaited_once()
-    mock_llm.chat.assert_awaited_once()
-
-
-# --- Grounding files tests ---
-
-
-async def test_handle_fetches_grounding_files_when_no_paths_referenced(
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    """When no file paths are mentioned, handler proactively fetches README.md etc."""
-    event = _make_event(comment_body="@forge-bot what does this project do?")
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.return_value = [
-        {"path": "README.md", "type": "blob", "size": 500},
-        {"path": "pyproject.toml", "type": "blob", "size": 200},
-        {"path": "src/main.py", "type": "blob", "size": 100},
-    ]
-    mock_forge.get_file_content.return_value = "# My Project\nThis is a demo."
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    file_content_calls = mock_forge.get_file_content.call_args_list
-    fetched_paths = [call.args[2] for call in file_content_calls]
-    assert "README.md" in fetched_paths
-
-    system_prompt = mock_llm.chat.call_args.args[0]
-    assert "My Project" in system_prompt
-
-
-# --- File references tests ---
-
-
-async def test_handle_fetches_referenced_files(
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    event = _make_event(
-        comment_body="@forge-bot can you explain forge_bot/config.py?"
-    )
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.return_value = []
-    mock_forge.get_file_content.return_value = 'SECRET = "hello"\n'
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    mock_forge.get_file_content.assert_any_await(
-        "owner", "repo", "forge_bot/config.py", ref="main"
-    )
-
-    system_prompt = mock_llm.chat.call_args.args[0]
-    assert "forge_bot/config.py" in system_prompt
-    assert 'SECRET = "hello"' in system_prompt
-
-
-# --- Commit tests ---
-
-
-async def test_handle_fetches_referenced_commits(
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    event = _make_event(
-        comment_body="@forge-bot can you read commit 4a5bc21157?"
-    )
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.return_value = []
-    mock_forge.get_commit.return_value = {
-        "sha": "4a5bc21157abcdef1234567890abcdef12345678",
-        "commit": {
-            "message": "feat: add user authentication",
-            "author": {
-                "name": "Dev User",
-                "date": "2026-01-15T10:00:00Z",
-            },
-        },
-    }
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    mock_forge.get_commit.assert_awaited_once_with(
-        "owner", "repo", "4a5bc21157"
-    )
-    system_prompt = mock_llm.chat.call_args.args[0]
-    assert "4a5bc21157" in system_prompt
-    assert "add user authentication" in system_prompt
-
-
-# --- Attachment tests ---
-
-
-async def test_handle_includes_attachments_in_prompt(
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    event = _make_event(
-        comment_body="@forge-bot what does this screenshot show?",
-        issue_body="See:\n![error](/attachments/abc-123/screenshot.png)",
-    )
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.return_value = []
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    system_prompt = mock_llm.chat.call_args.args[0]
-    assert "screenshot.png" in system_prompt
-
-
-async def test_handle_downloads_text_attachments(
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    event = _make_event(
-        comment_body="@forge-bot review this doc",
-        issue_body="Please review:\n![tdd](/attachments/uuid-1/tdd.md)",
-    )
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.return_value = []
-    mock_forge.download_url.return_value = "# TDD Plan\nWrite tests first."
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    mock_forge.download_url.assert_awaited_once()
-    system_prompt = mock_llm.chat.call_args.args[0]
-    assert "TDD Plan" in system_prompt
-
-
-async def test_handle_survives_attachment_download_failure(
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    event = _make_event(
-        comment_body="@forge-bot check this",
-        issue_body="![doc](/attachments/uuid/spec.md)",
-    )
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.return_value = []
-    mock_forge.download_url.side_effect = RuntimeError("Network error")
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    mock_llm.chat.assert_awaited_once()
-    mock_forge.post_comment.assert_awaited_once()
-
-
-# --- Fetch loop tests ---
-
-
-async def test_fetch_loop_fetches_requested_files(
-    settings: Settings,
-):
-    """When LLM responds with [FETCH:], handler fetches and re-prompts."""
-    event = _make_event(comment_body="@forge-bot explain the server")
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.return_value = [
-        {"path": "forge_bot/server.py", "type": "blob", "size": 200},
-        {"path": "README.md", "type": "blob", "size": 50},
-    ]
-    mock_forge.get_file_content.return_value = "# server code"
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    mock_llm = AsyncMock()
-    # First call: LLM requests a file.
-    # Second call: LLM gives a real answer.
-    mock_llm.chat.side_effect = [
-        "[FETCH: forge_bot/server.py]",
-        "The server uses FastAPI to handle webhooks.",
-    ]
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    # LLM should have been called twice.
-    assert mock_llm.chat.await_count == 2
-
-    # The second call's system prompt should contain the fetched file.
-    second_call_prompt = mock_llm.chat.call_args_list[1].args[0]
-    assert "forge_bot/server.py" in second_call_prompt
-    assert "server code" in second_call_prompt
-
-    # Posted reply should be the clean final answer.
-    posted_body = mock_forge.post_comment.call_args.args[3]
-    assert "FastAPI" in posted_body
-    assert "[FETCH:" not in posted_body
-
-
-async def test_fetch_loop_with_branch_specifier(
-    settings: Settings,
-):
-    """[FETCH: file@branch] fetches from the specified branch."""
-    event = _make_event(comment_body="@forge-bot compare configs")
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.return_value = [
-        {"path": "config.yaml", "type": "blob", "size": 100},
-    ]
-    mock_forge.get_file_content.return_value = "key: value"
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    mock_llm = AsyncMock()
-    mock_llm.chat.side_effect = [
-        "[FETCH: config.yaml@develop]",
-        "The config differs on the develop branch.",
-    ]
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    # Should have fetched with ref="develop"
-    file_content_calls = mock_forge.get_file_content.call_args_list
-    # Find the call for config.yaml (may be after grounding file calls)
-    fetch_call = [
-        c for c in file_content_calls
-        if c.args[2] == "config.yaml" and c.kwargs.get("ref") == "develop"
-    ]
-    assert len(fetch_call) == 1
-
-
-async def test_fetch_loop_max_rounds_enforced(
-    settings: Settings,
-):
-    """The fetch loop stops after _MAX_FETCH_ROUNDS."""
-    event = _make_event(comment_body="@forge-bot investigate")
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.return_value = [
-        {"path": "a.py", "type": "blob", "size": 10},
-        {"path": "b.py", "type": "blob", "size": 10},
-        {"path": "c.py", "type": "blob", "size": 10},
-    ]
-    mock_forge.get_file_content.return_value = "code"
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    mock_llm = AsyncMock()
-    # Every call requests more files — should stop after max rounds.
-    mock_llm.chat.side_effect = [
-        "[FETCH: a.py]",
-        "[FETCH: b.py]",
-        "[FETCH: c.py]",  # This shouldn't trigger a 4th call.
-    ]
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    # MAX_FETCH_ROUNDS is 2, so total calls = 3 (initial + 2 rounds).
-    assert mock_llm.chat.await_count == 3
-
-    # Final reply should be cleaned — no [FETCH:] markers.
-    posted_body = mock_forge.post_comment.call_args.args[3]
-    assert "[FETCH:" not in posted_body
-    assert "wasn't able to form" in posted_body
-
-
-async def test_fetch_loop_strips_markers_from_final_reply(
-    settings: Settings,
-):
-    """[FETCH:] markers are stripped from the final posted reply."""
-    event = _make_event(comment_body="@forge-bot help")
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.return_value = []
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    mock_llm = AsyncMock()
-    mock_llm.chat.return_value = (
-        "Here's the answer.\n[FETCH: nonexistent.py]\nMore text."
-    )
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    posted_body = mock_forge.post_comment.call_args.args[3]
-    assert "[FETCH:" not in posted_body
-    assert "Here's the answer." in posted_body
-
-
-# --- Unit tests for helper functions ---
-
-
-def test_extract_file_paths_from_text():
-    text = "Look at forge_bot/config.py and also src/main.py for details."
-    paths = _extract_file_paths(text)
-    assert "forge_bot/config.py" in paths
-    assert "src/main.py" in paths
-
-
-def test_extract_file_paths_in_backticks():
-    text = "Check `forge_bot/server.py` for the webhook endpoint."
-    paths = _extract_file_paths(text)
-    assert "forge_bot/server.py" in paths
-
-
-def test_extract_file_paths_deduplicates():
-    text = "See config.py and also config.py again."
-    paths = _extract_file_paths(text)
-    assert paths.count("config.py") == 1
-
-
-def test_extract_file_paths_no_matches():
-    text = "This text has no file paths at all."
-    assert _extract_file_paths(text) == []
-
-
-def test_extract_attachments():
-    text = "Here:\n![my image](/attachments/uuid-1/photo.png)\nand more"
-    results = _extract_attachments(text, "https://gitea.example.com")
-    assert len(results) == 1
-    assert results[0]["alt"] == "my image"
-    assert (
-        results[0]["url"]
-        == "https://gitea.example.com/attachments/uuid-1/photo.png"
-    )
-
-
-def test_extract_attachments_empty_alt():
-    text = "![](/attachments/uuid-2/file.pdf)"
-    results = _extract_attachments(text, "https://gitea.example.com")
-    assert len(results) == 1
-    assert results[0]["alt"] == "attachment"
-
-
-def test_extract_attachments_none():
-    text = "No attachments here."
-    assert _extract_attachments(text, "https://gitea.example.com") == []
-
-
-def test_extract_commit_shas_basic():
-    text = "Check commit 4a5bc21157 for the fix."
-    shas = _extract_commit_shas(text)
-    assert "4a5bc21157" in shas
-
-
-def test_extract_commit_shas_full_sha():
-    text = "See 4a5bc21157abcdef1234567890abcdef12345678"
-    shas = _extract_commit_shas(text)
-    assert "4a5bc21157abcdef1234567890abcdef12345678" in shas
-
-
-def test_extract_commit_shas_no_match():
-    text = "This has no commits."
-    assert _extract_commit_shas(text) == []
-
-
-def test_extract_commit_shas_too_short():
-    text = "abc12 is too short to be a SHA."
-    assert _extract_commit_shas(text) == []
-
-
-def test_get_extension():
-    assert _get_extension("https://gitea.com/attachments/uuid/file.md") == ".md"
-    assert _get_extension("https://gitea.com/att/file.PNG") == ".png"
-    assert _get_extension("https://gitea.com/att/noext") == ""
-    assert _get_extension("file.py?v=2") == ".py"
-
-
-def test_parse_fetch_request_simple():
-    path, ref = _parse_fetch_request("src/main.py")
-    assert path == "src/main.py"
-    assert ref == ""
-
-
-def test_parse_fetch_request_with_branch():
-    path, ref = _parse_fetch_request("src/main.py@develop")
-    assert path == "src/main.py"
-    assert ref == "develop"
-
-
-def test_parse_fetch_request_with_sha():
-    path, ref = _parse_fetch_request("config.yaml@abc123f")
-    assert path == "config.yaml"
-    assert ref == "abc123f"
-
-
-def test_parse_fetch_request_strips_whitespace():
-    path, ref = _parse_fetch_request("  src/main.py @ develop  ")
-    assert path == "src/main.py"
-    assert ref == "develop"
-
-
-# --- Context limits tests ---
-
-
-def test_context_limits_small_window():
-    limits = _context_limits(2048)
-    assert limits["max_recent_comments"] == 2
-    assert limits["summary_max_tokens"] == 128
-    assert limits["max_tree_entries"] == 51
-    assert limits["max_file_chars"] == 4096
-    assert limits["max_grounding_file_chars"] == 2048
-
-
-def test_context_limits_large_window():
-    limits = _context_limits(32768)
-    assert limits["max_recent_comments"] == 10
-    assert limits["summary_max_tokens"] == 512
-    assert limits["max_tree_entries"] == 200
-    assert limits["max_file_chars"] == 8000
-    assert limits["max_grounding_file_chars"] == 4000
-
-
-def test_context_limits_default_window():
-    limits = _context_limits(8192)
-    assert limits["max_recent_comments"] == 4
-    assert limits["summary_max_tokens"] == 512
-    assert limits["max_tree_entries"] == 200
-
-
-# --- Conversation summarization tests ---
-
-
-async def test_short_conversation_no_summarization(
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    """When thread has <= max_recent_comments, no summarization occurs."""
-    event = _make_event(comment_body="@forge-bot explain this")
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = [
-        {
-            "id": i,
-            "body": f"Comment {i}",
-            "user": {"login": "developer"},
-            "created_at": f"2026-01-01T00:0{i}:00Z",
-        }
-        for i in range(3)
-    ]
-    mock_forge.get_repo_tree.return_value = []
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    # LLM.chat should be called exactly once (no summarization call).
-    assert mock_llm.chat.await_count == 1
-    system_prompt = mock_llm.chat.call_args.args[0]
-    assert "EARLIER CONVERSATION" not in system_prompt
-
-
-async def test_long_conversation_triggers_summarization(
-    settings: Settings,
-):
-    """When thread exceeds max_recent_comments, old comments are summarized."""
-    event = _make_event(comment_body="@forge-bot summarize progress")
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = [
-        {
-            "id": i,
-            "body": f"Comment number {i} about the project",
-            "user": {"login": "developer" if i % 2 == 0 else "forge-bot"},
-            "created_at": f"2026-01-01T00:{i:02d}:00Z",
-        }
-        for i in range(10)
-    ]
-    mock_forge.get_repo_tree.return_value = []
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    mock_llm = AsyncMock()
-    mock_llm.chat.side_effect = [
-        "The conversation covered project setup and configuration.",
-        "Here is my response based on the context.",
-    ]
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    # LLM.chat called twice: once for summarization, once for response.
-    assert mock_llm.chat.await_count == 2
-
-    # First call: summarization.
-    summary_system = mock_llm.chat.call_args_list[0].args[0]
-    assert "CONVERSATION TO SUMMARIZE" in summary_system
-    assert "forge-bot" in summary_system
-
-    # Second call: main response includes summary.
-    main_system = mock_llm.chat.call_args_list[1].args[0]
-    assert "EARLIER CONVERSATION" in main_system
-    assert "project setup and configuration" in main_system
-
-
-async def test_summarization_failure_falls_back(
-    settings: Settings,
-):
-    """If summarization LLM call fails, handler falls back to truncation."""
-    event = _make_event(comment_body="@forge-bot help")
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = [
-        {
-            "id": i,
-            "body": f"Comment {i}",
-            "user": {"login": "developer"},
-            "created_at": f"2026-01-01T00:{i:02d}:00Z",
-        }
-        for i in range(10)
-    ]
-    mock_forge.get_repo_tree.return_value = []
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    mock_llm = AsyncMock()
-    mock_llm.chat.side_effect = [
-        RuntimeError("LLM is down"),
-        "Here is my response.",
-    ]
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    # Should still post a reply (fell back on truncation summary).
-    mock_forge.post_comment.assert_awaited_once()
-    # The main call should have a fallback summary in it.
-    main_system = mock_llm.chat.call_args_list[1].args[0]
-    assert "EARLIER CONVERSATION" in main_system
-
-
-# --- Prompt structure tests ---
-
-
-async def test_prompt_structure_ground_truth_after_conversation(
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    """Ground truth sections (file tree, file contents) appear after conversation."""
-    event = _make_event(comment_body="@forge-bot what is this project?")
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = [
-        {
-            "id": 1,
-            "body": "Some comment",
-            "user": {"login": "developer"},
-            "created_at": "2026-01-01T00:00:00Z",
-        },
-    ]
-    mock_forge.get_repo_tree.return_value = [
-        {"path": "README.md", "type": "blob", "size": 50},
-        {"path": "src/main.py", "type": "blob", "size": 100},
-    ]
-    mock_forge.get_file_content.return_value = "# My Project"
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    system_prompt = mock_llm.chat.call_args.args[0]
-
-    # Verify ordering: conversation before ground truth sections.
-    conv_pos = system_prompt.index("=== RECENT CONVERSATION ===")
-    tree_pos = system_prompt.index("=== REPOSITORY FILE TREE")
-    file_pos = system_prompt.index("=== FILE CONTENTS")
-
-    assert conv_pos < tree_pos, "Conversation should appear before file tree"
-    assert tree_pos < file_pos, "File tree should appear before file contents"
-
-
-async def test_prompt_contains_anti_hallucination_rules(
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    """The system prompt includes explicit anti-hallucination instructions."""
-    event = _make_event(comment_body="@forge-bot hello")
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = []
-    mock_forge.get_repo_tree.return_value = []
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    system_prompt = mock_llm.chat.call_args.args[0]
-    assert "MANDATORY RULES" in system_prompt
-    assert "do NOT guess" in system_prompt
-    assert "NEVER" in system_prompt
-    assert "simulating" in system_prompt
-
-
-async def test_summarization_prompt_filters_bot_claims(
-    settings: Settings,
-):
-    """The conversation_summary.j2 template warns about bot hallucinations."""
-    event = _make_event(comment_body="@forge-bot update")
-
-    mock_forge = AsyncMock()
-    mock_forge.get_issue_comments.return_value = [
-        {
-            "id": i,
-            "body": f"Comment {i}",
-            "user": {"login": "developer"},
-            "created_at": f"2026-01-01T00:{i:02d}:00Z",
-        }
-        for i in range(10)
-    ]
-    mock_forge.get_repo_tree.return_value = []
-    mock_forge.post_comment.return_value = {"id": 10}
-
-    mock_llm = AsyncMock()
-    mock_llm.chat.side_effect = [
-        "Users discussed configuration changes.",
-        "Here is my response.",
-    ]
-
-    handler = IssueCommentHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    # The summarization call's system prompt should mention hallucination risk.
-    summary_system = mock_llm.chat.call_args_list[0].args[0]
-    assert "hallucinated" in summary_system.lower()
-    assert "forge-bot" in summary_system
+# -- Tests -------------------------------------------------------------------
+
+
+class TestHandleFlow:
+    @pytest.mark.asyncio
+    async def test_happy_path(self) -> None:
+        """Full handle(): status -> container -> agent -> post -> finalize -> destroy."""
+        handler, api, llm = _make_handler()
+        event = _make_event()
+        mock_status = _mock_status()
+        mock_container = _mock_container()
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(return_value="Here is my answer.")
+        mock_agent.collect_artifacts = AsyncMock(return_value=[])
+
+        p_retriever, p_tool = _patches()
+        with (
+            patch(
+                "forge_bot.handlers.issue_comment.ContainerManager",
+                return_value=mock_container,
+            ),
+            patch(
+                "forge_bot.handlers.issue_comment.StatusCommentManager",
+                return_value=mock_status,
+            ),
+            patch(
+                "forge_bot.handlers.issue_comment.AgentLoop",
+                return_value=mock_agent,
+            ),
+            p_retriever,
+            p_tool,
+        ):
+            await handler.handle(event)
+
+        mock_status.post_initial_status.assert_awaited_once()
+        mock_container.create.assert_awaited_once()
+        mock_agent.run.assert_awaited_once()
+        mock_status.post_response.assert_awaited_once_with("Here is my answer.")
+        mock_status.finalize_status.assert_awaited_once_with("Done")
+        mock_container.destroy.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_container_failure_posts_error(self) -> None:
+        """Container creation failure -> error posted -> container destroyed."""
+        handler, _, _ = _make_handler()
+        event = _make_event()
+        mock_status = _mock_status()
+        mock_container = _mock_container()
+        mock_container.create = AsyncMock(side_effect=RuntimeError("Docker down"))
+
+        p_retriever, p_tool = _patches()
+        with (
+            patch(
+                "forge_bot.handlers.issue_comment.ContainerManager",
+                return_value=mock_container,
+            ),
+            patch(
+                "forge_bot.handlers.issue_comment.StatusCommentManager",
+                return_value=mock_status,
+            ),
+            p_retriever,
+            p_tool,
+        ):
+            await handler.handle(event)
+
+        mock_status.post_response.assert_awaited_once()
+        body = mock_status.post_response.call_args[0][0]
+        assert "error" in body.lower()
+        mock_container.destroy.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_container_destroyed_on_exception(self) -> None:
+        """Container is always destroyed even if agent raises."""
+        handler, _, _ = _make_handler()
+        event = _make_event()
+        mock_status = _mock_status()
+        mock_container = _mock_container()
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(side_effect=RuntimeError("Unexpected"))
+
+        p_retriever, p_tool = _patches()
+        with (
+            patch(
+                "forge_bot.handlers.issue_comment.ContainerManager",
+                return_value=mock_container,
+            ),
+            patch(
+                "forge_bot.handlers.issue_comment.StatusCommentManager",
+                return_value=mock_status,
+            ),
+            patch(
+                "forge_bot.handlers.issue_comment.AgentLoop",
+                return_value=mock_agent,
+            ),
+            p_retriever,
+            p_tool,
+        ):
+            await handler.handle(event)
+
+        mock_container.destroy.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_status_failure_non_fatal(self) -> None:
+        """Failure to post initial status doesn't block processing."""
+        handler, _, _ = _make_handler()
+        event = _make_event()
+        mock_status = _mock_status()
+        mock_status.post_initial_status = AsyncMock(
+            side_effect=RuntimeError("API down"),
+        )
+        mock_container = _mock_container()
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(return_value="My response.")
+        mock_agent.collect_artifacts = AsyncMock(return_value=[])
+
+        p_retriever, p_tool = _patches()
+        with (
+            patch(
+                "forge_bot.handlers.issue_comment.ContainerManager",
+                return_value=mock_container,
+            ),
+            patch(
+                "forge_bot.handlers.issue_comment.StatusCommentManager",
+                return_value=mock_status,
+            ),
+            patch(
+                "forge_bot.handlers.issue_comment.AgentLoop",
+                return_value=mock_agent,
+            ),
+            p_retriever,
+            p_tool,
+        ):
+            await handler.handle(event)
+
+        mock_status.post_response.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_artifacts_attached(self) -> None:
+        """Artifacts from agent.collect_artifacts() are uploaded."""
+        handler, _, _ = _make_handler()
+        event = _make_event()
+        mock_status = _mock_status()
+        mock_container = _mock_container()
+
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(return_value="Done.")
+        mock_agent.collect_artifacts = AsyncMock(
+            return_value=[("report.txt", b"hello"), ("log.csv", b"a,b")]
+        )
+
+        p_retriever, p_tool = _patches()
+        with (
+            patch(
+                "forge_bot.handlers.issue_comment.ContainerManager",
+                return_value=mock_container,
+            ),
+            patch(
+                "forge_bot.handlers.issue_comment.StatusCommentManager",
+                return_value=mock_status,
+            ),
+            patch(
+                "forge_bot.handlers.issue_comment.AgentLoop",
+                return_value=mock_agent,
+            ),
+            p_retriever,
+            p_tool,
+        ):
+            await handler.handle(event)
+
+        assert mock_status.attach_file.await_count == 2
+        mock_status.attach_file.assert_any_await("report.txt", b"hello")
+        mock_status.attach_file.assert_any_await("log.csv", b"a,b")
+
+
+class TestConversationContext:
+    @pytest.mark.asyncio
+    async def test_conversation_included_in_user_message(self) -> None:
+        """Issue comments are fetched and included in the user message."""
+        handler, api, _ = _make_handler()
+        event = _make_event(issue_body="This is the issue description.")
+
+        # api.call returns issue comments for get_issue_comments
+        api.call = AsyncMock(
+            side_effect=lambda name, **kw: (
+                [
+                    {"id": 50, "user": {"login": "alice"}, "body": "First comment"},
+                    {"id": 100, "user": {"login": "bob"}, "body": "Trigger comment"},
+                ]
+                if name == "get_issue_comments"
+                else {"id": 1}
+            )
+        )
+
+        result = await handler._build_user_message("owner", "repo", 1, event)
+
+        assert "Conversation so far" in result
+        assert "Issue description" in result
+        assert "This is the issue description." in result
+        assert "@alice: First comment" in result
+        # The triggering comment (id=100) should be excluded
+        assert "Trigger comment" not in result
+        assert "Current request" in result
+        assert event.comment.body in result
+
+    @pytest.mark.asyncio
+    async def test_api_failure_returns_comment_body(self) -> None:
+        """If fetching comments fails, only the comment body is used."""
+        handler, api, _ = _make_handler()
+        event = _make_event()
+
+        api.call = AsyncMock(side_effect=RuntimeError("API error"))
+
+        result = await handler._build_user_message("owner", "repo", 1, event)
+
+        # Should fall back to just the comment body
+        assert result == event.comment.body
+
+    @pytest.mark.asyncio
+    async def test_no_issue_body_no_comments(self) -> None:
+        """Empty issue body and no comments returns just the comment body."""
+        handler, api, _ = _make_handler()
+        event = _make_event(issue_body="")
+
+        api.call = AsyncMock(return_value=[])
+
+        result = await handler._build_user_message("owner", "repo", 1, event)
+        assert result == event.comment.body
+
+    @pytest.mark.asyncio
+    async def test_budget_caps_long_threads(self) -> None:
+        """Very long threads are truncated by the character budget."""
+        handler, api, _ = _make_handler()
+        # llm_context_window = 8192, budget = 8192 * 4 // 6 ≈ 5461 chars
+        event = _make_event(issue_body="Short body.")
+
+        # Generate many comments that exceed the budget
+        many_comments = [{"id": i, "user": {"login": "user"}, "body": "x" * 300} for i in range(50)]
+        api.call = AsyncMock(return_value=many_comments)
+
+        result = await handler._fetch_conversation("owner", "repo", 1, event)
+
+        # Should be under the budget
+        budget = 8192 * 4 // 6
+        assert len(result) <= budget + 500  # some tolerance for join separators
+
+    @pytest.mark.asyncio
+    async def test_non_list_response_handled(self) -> None:
+        """If API returns non-list, conversation context is still valid."""
+        handler, api, _ = _make_handler()
+        event = _make_event(issue_body="My issue")
+
+        api.call = AsyncMock(return_value={"error": "not found"})
+
+        result = await handler._fetch_conversation("owner", "repo", 1, event)
+
+        # Should include just the issue body
+        assert "My issue" in result

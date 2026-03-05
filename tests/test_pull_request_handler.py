@@ -1,30 +1,13 @@
-"""Tests for forge_bot.handlers.pull_request."""
+"""Tests for the PullRequestHandler lifecycle."""
 
-from unittest.mock import AsyncMock
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from forge_bot.config import Settings
 from forge_bot.handlers.pull_request import PullRequestHandler
 from forge_bot.models import PullRequestEvent
-
-SAMPLE_DIFF = """\
-diff --git a/server.py b/server.py
---- a/server.py
-+++ b/server.py
-@@ -10,6 +10,7 @@
- import logging
-+import os
-"""
-
-
-@pytest.fixture
-def settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
-    monkeypatch.setenv("FORGE_INSTANCE_URL", "https://gitea.example.com")
-    monkeypatch.setenv("FORGE_API_TOKEN", "test-token")
-    monkeypatch.setenv("FORGE_WEBHOOK_SECRET", "test-secret")
-    monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
-    return Settings()
 
 
 @pytest.fixture
@@ -32,156 +15,234 @@ def pr_event(sample_pr_payload: dict) -> PullRequestEvent:
     return PullRequestEvent.model_validate(sample_pr_payload)
 
 
-@pytest.fixture
-def mock_forge():
-    forge = AsyncMock()
-    forge.get_pull_diff.return_value = SAMPLE_DIFF
-    forge.get_pull_files.return_value = [
-        {"filename": "server.py", "additions": 1, "deletions": 0},
-    ]
-    forge.post_comment.return_value = {"id": 99, "body": "review"}
-    return forge
+def _make_handler() -> tuple[PullRequestHandler, MagicMock, AsyncMock]:
+    api = MagicMock()
+    api.call = AsyncMock(return_value={"id": 1})
 
-
-@pytest.fixture
-def mock_llm():
     llm = AsyncMock()
-    llm.chat.return_value = "Looks good — no major issues found."
-    return llm
+
+    settings = MagicMock()
+    settings.forge_api_token = "test-token"
+    settings.forge_instance_url = "https://gitea.example.com"
+    settings.container_network_enabled = True
+    settings.llm_context_window = 8192
+
+    handler = PullRequestHandler(
+        api_client=api,
+        llm_client=llm,
+        settings=settings,
+        bot_username="forge-bot",
+    )
+    return handler, api, llm
 
 
-async def test_handle_fetches_diff_and_posts_review(
-    pr_event: PullRequestEvent,
-    mock_forge: AsyncMock,
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    handler = PullRequestHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(pr_event)
+def _mock_status() -> MagicMock:
+    status = MagicMock()
+    status.post_initial_status = AsyncMock()
+    status.update_phase = AsyncMock()
+    status.record_tool_call = AsyncMock()
+    status.post_response = AsyncMock()
+    status.finalize_status = AsyncMock()
+    status.update_todos = AsyncMock()
+    status.attach_file = AsyncMock()
+    status.todos = []
+    return status
 
-    mock_forge.get_pull_diff.assert_awaited_once_with("owner", "repo", 1)
-    mock_forge.get_pull_files.assert_awaited_once_with("owner", "repo", 1)
 
-    # LLM called with system prompt from template + user message with diff.
-    mock_llm.chat.assert_awaited_once()
-    system_prompt = mock_llm.chat.call_args.args[0]
-    user_message = mock_llm.chat.call_args.args[1]
-    assert "owner/repo" in system_prompt
-    assert "Test PR" in system_prompt
-    assert "diff --git" in user_message
-    assert "server.py" in user_message
+def _mock_container() -> MagicMock:
+    container = MagicMock()
+    container.create = AsyncMock()
+    container.destroy = AsyncMock()
+    container.exec = AsyncMock()
+    container.clone_url = "https://token@gitea.example.com/owner/repo.git"
+    container.default_branch = "main"
+    return container
 
-    # Posts the review as a comment on the PR.
-    mock_forge.post_comment.assert_awaited_once_with(
-        "owner", "repo", 1, "Looks good — no major issues found."
+
+def _patches():
+    """Return context managers that patch SmartRetriever and RetrievalTool."""
+    return (
+        patch("forge_bot.handlers.pull_request.SmartRetriever"),
+        patch("forge_bot.handlers.pull_request.RetrievalTool"),
     )
 
 
-async def test_handle_includes_pr_description_in_message(
-    pr_event: PullRequestEvent,
-    mock_forge: AsyncMock,
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    handler = PullRequestHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(pr_event)
+class TestHandleFlow:
+    @pytest.mark.asyncio
+    async def test_happy_path(self, pr_event: PullRequestEvent) -> None:
+        """Full handle(): status -> container -> agent -> post -> finalize -> destroy."""
+        handler, _, _ = _make_handler()
+        mock_status = _mock_status()
+        mock_container = _mock_container()
 
-    user_message = mock_llm.chat.call_args.args[1]
-    assert "Test description" in user_message
-    assert "feature" in user_message  # head branch
-    assert "main" in user_message  # base branch
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(return_value="Looks good, no issues found.")
+        mock_agent.collect_artifacts = AsyncMock(return_value=[])
 
+        p_retriever, p_tool = _patches()
+        with (
+            patch(
+                "forge_bot.handlers.pull_request.ContainerManager",
+                return_value=mock_container,
+            ),
+            patch(
+                "forge_bot.handlers.pull_request.StatusCommentManager",
+                return_value=mock_status,
+            ),
+            patch(
+                "forge_bot.handlers.pull_request.AgentLoop",
+                return_value=mock_agent,
+            ),
+            p_retriever,
+            p_tool,
+        ):
+            await handler.handle(pr_event)
 
-async def test_handle_skips_review_on_empty_diff(
-    pr_event: PullRequestEvent,
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    mock_forge = AsyncMock()
-    mock_forge.get_pull_diff.return_value = ""
-    mock_forge.get_pull_files.return_value = []
+        mock_status.post_initial_status.assert_awaited_once()
+        mock_container.create.assert_awaited_once()
+        mock_agent.run.assert_awaited_once()
+        mock_status.post_response.assert_awaited_once_with("Looks good, no issues found.")
+        mock_status.finalize_status.assert_awaited_once_with("Done")
+        mock_container.destroy.assert_awaited_once()
 
-    handler = PullRequestHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(pr_event)
+    @pytest.mark.asyncio
+    async def test_container_failure_posts_error(
+        self,
+        pr_event: PullRequestEvent,
+    ) -> None:
+        handler, _, _ = _make_handler()
+        mock_status = _mock_status()
+        mock_container = _mock_container()
+        mock_container.create = AsyncMock(side_effect=RuntimeError("Docker down"))
 
-    mock_llm.chat.assert_not_awaited()
-    mock_forge.post_comment.assert_not_awaited()
+        p_retriever, p_tool = _patches()
+        with (
+            patch(
+                "forge_bot.handlers.pull_request.ContainerManager",
+                return_value=mock_container,
+            ),
+            patch(
+                "forge_bot.handlers.pull_request.StatusCommentManager",
+                return_value=mock_status,
+            ),
+            p_retriever,
+            p_tool,
+        ):
+            await handler.handle(pr_event)
 
+        mock_status.post_response.assert_awaited_once()
+        body = mock_status.post_response.call_args[0][0]
+        assert "error" in body.lower()
+        mock_container.destroy.assert_awaited_once()
 
-async def test_handle_truncates_large_diffs(
-    pr_event: PullRequestEvent,
-    mock_forge: AsyncMock,
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    mock_forge.get_pull_diff.return_value = "x" * 50_000
+    @pytest.mark.asyncio
+    async def test_container_destroyed_on_exception(
+        self,
+        pr_event: PullRequestEvent,
+    ) -> None:
+        handler, _, _ = _make_handler()
+        mock_status = _mock_status()
+        mock_container = _mock_container()
 
-    handler = PullRequestHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(pr_event)
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(side_effect=RuntimeError("Unexpected"))
 
-    user_message = mock_llm.chat.call_args.args[1]
-    assert "diff truncated" in user_message
-    # The diff portion should be capped, not the full 50k.
-    assert len(user_message) < 50_000
+        p_retriever, p_tool = _patches()
+        with (
+            patch(
+                "forge_bot.handlers.pull_request.ContainerManager",
+                return_value=mock_container,
+            ),
+            patch(
+                "forge_bot.handlers.pull_request.StatusCommentManager",
+                return_value=mock_status,
+            ),
+            patch(
+                "forge_bot.handlers.pull_request.AgentLoop",
+                return_value=mock_agent,
+            ),
+            p_retriever,
+            p_tool,
+        ):
+            await handler.handle(pr_event)
 
+        mock_container.destroy.assert_awaited_once()
 
-async def test_handle_posts_error_on_llm_failure(
-    pr_event: PullRequestEvent,
-    mock_forge: AsyncMock,
-    settings: Settings,
-):
-    mock_llm = AsyncMock()
-    mock_llm.chat.side_effect = RuntimeError("LLM down")
+    @pytest.mark.asyncio
+    async def test_agent_receives_pr_metadata(
+        self,
+        pr_event: PullRequestEvent,
+    ) -> None:
+        """The system prompt contains PR metadata (title, branches)."""
+        handler, _, _ = _make_handler()
+        mock_status = _mock_status()
+        mock_container = _mock_container()
 
-    handler = PullRequestHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(pr_event)
+        captured_agent = MagicMock()
+        captured_agent.run = AsyncMock(return_value="Review complete.")
+        captured_agent.collect_artifacts = AsyncMock(return_value=[])
 
-    mock_forge.post_comment.assert_awaited_once()
-    posted_body = mock_forge.post_comment.call_args.args[3]
-    assert "error" in posted_body.lower()
+        p_retriever, p_tool = _patches()
+        with (
+            patch(
+                "forge_bot.handlers.pull_request.ContainerManager",
+                return_value=mock_container,
+            ),
+            patch(
+                "forge_bot.handlers.pull_request.StatusCommentManager",
+                return_value=mock_status,
+            ),
+            patch(
+                "forge_bot.handlers.pull_request.AgentLoop",
+                return_value=captured_agent,
+            ),
+            p_retriever,
+            p_tool,
+        ):
+            await handler.handle(pr_event)
 
+        # agent.run() receives (system_prompt, user_message)
+        captured_agent.run.assert_awaited_once()
+        system_prompt = captured_agent.run.call_args[0][0]
+        user_message = captured_agent.run.call_args[0][1]
 
-async def test_handle_survives_diff_fetch_failure(
-    pr_event: PullRequestEvent,
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    mock_forge = AsyncMock()
-    mock_forge.get_pull_diff.side_effect = RuntimeError("API error")
-    mock_forge.get_pull_files.return_value = []
+        # System prompt should contain PR metadata from the template
+        assert "Test PR" in system_prompt
+        assert "feature" in system_prompt  # head branch
+        assert "main" in system_prompt  # base branch
+        assert "owner/repo" in system_prompt
 
-    handler = PullRequestHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(pr_event)
+        # User message should reference the PR
+        assert "#1" in user_message
 
-    # Empty diff → skip review entirely.
-    mock_llm.chat.assert_not_awaited()
+    @pytest.mark.asyncio
+    async def test_artifacts_attached(self, pr_event: PullRequestEvent) -> None:
+        """Artifacts from agent.collect_artifacts() are uploaded."""
+        handler, _, _ = _make_handler()
+        mock_status = _mock_status()
+        mock_container = _mock_container()
 
+        mock_agent = MagicMock()
+        mock_agent.run = AsyncMock(return_value="Review done.")
+        mock_agent.collect_artifacts = AsyncMock(return_value=[("diff.patch", b"patch content")])
 
-async def test_handle_survives_post_comment_failure(
-    pr_event: PullRequestEvent,
-    mock_forge: AsyncMock,
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    mock_forge.post_comment.side_effect = RuntimeError("API error")
+        p_retriever, p_tool = _patches()
+        with (
+            patch(
+                "forge_bot.handlers.pull_request.ContainerManager",
+                return_value=mock_container,
+            ),
+            patch(
+                "forge_bot.handlers.pull_request.StatusCommentManager",
+                return_value=mock_status,
+            ),
+            patch(
+                "forge_bot.handlers.pull_request.AgentLoop",
+                return_value=mock_agent,
+            ),
+            p_retriever,
+            p_tool,
+        ):
+            await handler.handle(pr_event)
 
-    handler = PullRequestHandler(mock_forge, mock_llm, settings, "forge-bot")
-    # Should not raise.
-    await handler.handle(pr_event)
-    mock_forge.post_comment.assert_awaited_once()
-
-
-async def test_build_user_message_without_description(
-    sample_pr_payload: dict,
-    mock_forge: AsyncMock,
-    mock_llm: AsyncMock,
-    settings: Settings,
-):
-    sample_pr_payload["pull_request"]["body"] = ""
-    event = PullRequestEvent.model_validate(sample_pr_payload)
-
-    handler = PullRequestHandler(mock_forge, mock_llm, settings, "forge-bot")
-    await handler.handle(event)
-
-    user_message = mock_llm.chat.call_args.args[1]
-    assert "Description" not in user_message
+        mock_status.attach_file.assert_awaited_once_with("diff.patch", b"patch content")

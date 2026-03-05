@@ -9,9 +9,9 @@ import pytest
 from forge_bot.rag.pipeline import RAGPipeline
 
 
-def _setup_pipeline(settings, mock_forge, store=None, embedder=None, ingester=None):
+def _setup_pipeline(settings, mock_api_client, store=None, embedder=None, ingester=None):
     """Create a pipeline with pre-injected mocks (avoids lazy import issues)."""
-    pipeline = RAGPipeline(settings, mock_forge)
+    pipeline = RAGPipeline(settings, mock_api_client)
     pipeline._store = store or MagicMock()
     pipeline._embedder = embedder or AsyncMock()
     pipeline._chunker = MagicMock()
@@ -20,26 +20,29 @@ def _setup_pipeline(settings, mock_forge, store=None, embedder=None, ingester=No
 
 
 @pytest.mark.asyncio
-async def test_retrieve_returns_empty_when_not_indexed(settings, mock_forge):
+async def test_retrieve_returns_empty_when_not_indexed(settings, mock_api_client):
     """Retrieve on a non-indexed repo should return empty string."""
     mock_store = MagicMock()
     mock_store.collection_exists.return_value = False
 
-    pipeline = _setup_pipeline(settings, mock_forge, store=mock_store)
+    pipeline = _setup_pipeline(settings, mock_api_client, store=mock_store)
     result = await pipeline.retrieve("owner", "repo", "what does hello do?")
 
     assert result == ""
 
 
 @pytest.mark.asyncio
-async def test_ensure_indexed_skips_if_exists(settings, mock_forge):
+async def test_ensure_indexed_skips_if_exists(settings, mock_api_client):
     """Should skip indexing if collection already has data."""
     mock_store = MagicMock()
     mock_store.collection_exists.return_value = True
     mock_ingester = AsyncMock()
 
     pipeline = _setup_pipeline(
-        settings, mock_forge, store=mock_store, ingester=mock_ingester,
+        settings,
+        mock_api_client,
+        store=mock_store,
+        ingester=mock_ingester,
     )
     count = await pipeline.ensure_indexed("owner", "repo", "main")
 
@@ -48,7 +51,7 @@ async def test_ensure_indexed_skips_if_exists(settings, mock_forge):
 
 
 @pytest.mark.asyncio
-async def test_ensure_indexed_force(settings, mock_forge):
+async def test_ensure_indexed_force(settings, mock_api_client):
     """Force indexing should re-index even if collection exists."""
     mock_store = MagicMock()
     mock_store.collection_exists.return_value = True
@@ -56,7 +59,10 @@ async def test_ensure_indexed_force(settings, mock_forge):
     mock_ingester.ingest_repo.return_value = 42
 
     pipeline = _setup_pipeline(
-        settings, mock_forge, store=mock_store, ingester=mock_ingester,
+        settings,
+        mock_api_client,
+        store=mock_store,
+        ingester=mock_ingester,
     )
     count = await pipeline.ensure_indexed("owner", "repo", "main", force=True)
 
@@ -65,7 +71,7 @@ async def test_ensure_indexed_force(settings, mock_forge):
 
 
 @pytest.mark.asyncio
-async def test_retrieve_formats_context(settings, mock_forge):
+async def test_retrieve_formats_context(settings, mock_api_client):
     """Retrieve should format hits as markdown."""
     mock_store = MagicMock()
     mock_store.collection_exists.return_value = True
@@ -92,7 +98,10 @@ async def test_retrieve_formats_context(settings, mock_forge):
     mock_embedder.embed_query.return_value = [0.5] * 8
 
     pipeline = _setup_pipeline(
-        settings, mock_forge, store=mock_store, embedder=mock_embedder,
+        settings,
+        mock_api_client,
+        store=mock_store,
+        embedder=mock_embedder,
     )
     result = await pipeline.retrieve("owner", "repo", "what is hello?")
 
@@ -102,17 +111,20 @@ async def test_retrieve_formats_context(settings, mock_forge):
 
 
 @pytest.mark.asyncio
-async def test_reindex_files(settings, mock_forge):
+async def test_reindex_files(settings, mock_api_client):
     """reindex_files should delegate to ingester."""
     mock_ingester = AsyncMock()
     mock_ingester.ingest_files.return_value = 5
 
-    pipeline = _setup_pipeline(settings, mock_forge, ingester=mock_ingester)
+    pipeline = _setup_pipeline(settings, mock_api_client, ingester=mock_ingester)
     count = await pipeline.reindex_files("owner", "repo", "main", ["src/main.py"])
 
     assert count == 5
     mock_ingester.ingest_files.assert_called_once_with(
-        "owner", "repo", "main", ["src/main.py"],
+        "owner",
+        "repo",
+        "main",
+        ["src/main.py"],
     )
 
 

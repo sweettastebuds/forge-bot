@@ -51,9 +51,7 @@ class VectorStore:
         if not chunks:
             return
 
-        ids = [
-            f"{c.file_path}:{c.start_line}-{c.end_line}" for c in chunks
-        ]
+        ids = [f"{c.file_path}:{c.start_line}-{c.end_line}" for c in chunks]
         documents = [c.content for c in chunks]
         metadatas = [
             {
@@ -102,16 +100,20 @@ class VectorStore:
             results["distances"][0],
             strict=True,
         ):
-            hits.append({
-                "content": doc,
-                "metadata": meta,
-                "distance": dist,
-            })
+            hits.append(
+                {
+                    "content": doc,
+                    "metadata": meta,
+                    "distance": dist,
+                }
+            )
 
         return hits
 
     def delete_by_file(
-        self, collection: Any, file_path: str,
+        self,
+        collection: Any,
+        file_path: str,
     ) -> None:
         """Delete all chunks for a specific file from the collection."""
         collection.delete(where={"file_path": file_path})

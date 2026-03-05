@@ -1,58 +1,116 @@
 # forge-bot
 
-AI-powered bot for Gitea and Forgejo. Receives webhook events, reviews PRs, answers questions on issues, and executes code in sandboxed containers — all via any OpenAI-compatible LLM.
+AI-powered bot for Gitea and Forgejo. Receives webhook events, reviews PRs, and answers questions on issues — driven by an LLM with tool access to your repository via per-event Docker containers.
 
-## Quick Start
+## Getting Started
+
+### Prerequisites
+
+- **Gitea or Forgejo instance** with a bot user account
+- **Docker** running on the host (for workspace containers)
+- **LLM endpoint** — OpenAI, or any OpenAI-compatible API (Ollama, llama.cpp, vLLM, etc.)
+
+### 1. Create a bot account on Gitea/Forgejo
+
+1. Create a new user account (e.g. `forge-bot`)
+2. Generate an API token: **Settings > Applications > Generate Token** (select all scopes)
+3. Note the token — you'll need it for `FORGE_API_TOKEN`
+
+### 2. Configure environment
 
 ```bash
 cp .env.example .env
-# Edit .env with your Gitea/Forgejo URL, API token, webhook secret, and LLM config
+```
+
+Edit `.env` with your values:
+
+```bash
+FORGE_INSTANCE_URL=https://your-gitea.example.com
+FORGE_API_TOKEN=<bot account API token>
+FORGE_WEBHOOK_SECRET=<any random secret string>
+LLM_API_KEY=<your LLM API key>
+
+# Optional — defaults shown:
+# LLM_BASE_URL=https://api.openai.com/v1
+# LLM_MODEL=gpt-4o
+# FORGE_PROVIDER=gitea   # or "forgejo"
+```
+
+### 3. Build the workspace image
+
+The bot spins up a Docker container per event to give the LLM access to `git`, `bash`, `python`, and the cloned repo:
+
+```bash
+docker build -t forge-bot-workspace:latest -f Dockerfile.workspace .
+```
+
+### 4. Start the bot
+
+**With Docker Compose (recommended):**
+
+```bash
 docker compose up -d
 ```
 
-Then add a webhook on your Gitea/Forgejo repo:
-- **URL:** `https://your-bot-host:8080/webhook`
-- **Secret:** same as `FORGE_WEBHOOK_SECRET` in `.env`
-- **Events:** Pull Request, Issue Comment
+**Or run directly:**
+
+```bash
+pip install -r requirements.txt
+uvicorn forge_bot.server:app --host 0.0.0.0 --port 8080
+```
+
+### 5. Configure the webhook
+
+In your Gitea/Forgejo repo (or org-wide), add a webhook:
+
+| Setting | Value |
+|---------|-------|
+| **Target URL** | `http://<bot-host>:8080/webhook` |
+| **Secret** | Same as `FORGE_WEBHOOK_SECRET` |
+| **Content type** | `application/json` |
+| **Events** | Pull Request, Issue Comment |
+
+### 6. Test it
+
+Create an issue and comment:
+
+```
+@forge-bot what does this repo do?
+```
+
+The bot will post a status comment (showing progress), gather context from the repo using tools, and then post its response.
 
 ## How It Works
 
-1. Bot runs as a regular Gitea/Forgejo user account with an API token
-2. Receives `pull_request` and `issue_comment` webhooks
-3. Returns HTTP 200 immediately (Gitea has a 5s delivery timeout)
-4. Processes events in background: fetches diffs/context, calls LLM, posts comments
-5. Optionally runs code in ephemeral Docker containers via DinD
-
-## Trigger Conditions
-
-| Event | When bot acts |
-|-------|--------------|
-| PR opened/updated | Bot is in assignees or requested reviewers |
-| Comment on issue/PR | Bot is @mentioned or assigned to the issue |
-| `/run python` in comment | Executes code block in sandbox, posts result |
-| `/review` in PR comment | Re-runs code review on current diff |
-| Issue assigned to bot | Posts greeting/triage response |
-
-## Architecture
-
 ```
-Gitea/Forgejo → webhook → FastAPI (HMAC verify, return 200)
-                              ↓ background task
-                         Event Router → Handler
-                              ↓
-                    ┌─────────┼──────────┐
-                    ↓         ↓          ↓
-              Forge API    LLM API    Sandbox
-              (httpx)     (openai)    (DinD)
+Gitea/Forgejo webhook
+       |
+       v
+  FastAPI /webhook (HMAC verify, return 200 immediately)
+       |
+       v  (background task)
+  Event Router --> Handler
+       |
+       |-- 1. Post status comment ("Working...")
+       |-- 2. Create workspace container (clone repo)
+       |-- 3. LLM tool-calling loop:
+       |       - search_api: discover available API endpoints
+       |       - api_call:   call any Gitea/Forgejo API endpoint
+       |       - exec:       run commands in the workspace (git, grep, cat, python, etc.)
+       |       - todo:       update visible progress checklist
+       |-- 4. Verification checks (hallucination, relevance, progress)
+       |-- 5. Post response comment
+       |-- 6. Destroy container
 ```
 
-**Optional RAG pipeline:** Ingests repo code → AST-aware chunking → embeddings → ChromaDB → retrieved context injected into LLM prompts.
+The LLM drives its own context gathering — instead of pre-fetching everything, it uses tools to explore the repo, run commands, and call APIs as needed.
 
 ## Configuration
 
-All config via environment variables. See `.env.example` for the full list.
+All config via environment variables (or `.env` file).
 
 **Required:**
+
 | Variable | Description |
 |----------|-------------|
 | `FORGE_INSTANCE_URL` | Gitea/Forgejo base URL |
@@ -61,12 +119,23 @@ All config via environment variables. See `.env.example` for the full list.
 | `LLM_API_KEY` | API key for LLM endpoint |
 
 **Key optional:**
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_BASE_URL` | `https://api.openai.com/v1` | Any OpenAI-compatible endpoint |
 | `LLM_MODEL` | `gpt-4o` | Model name |
-| `SANDBOX_ENABLED` | `true` | Enable `/run` code execution |
-| `RAG_ENABLED` | `false` | Enable codebase-aware context |
+| `LLM_CONTEXT_WINDOW` | `8192` | Match your model's context window |
+| `FORGE_PROVIDER` | `gitea` | `gitea` or `forgejo` |
+| `CONTAINER_WORKSPACE_IMAGE` | `forge-bot-workspace:latest` | Docker image for workspaces |
+| `CONTAINER_NETWORK_ENABLED` | `true` | Allow network in workspace containers |
+| `RAG_ENABLED` | `false` | Enable codebase-aware vector retrieval |
+
+## Trigger Conditions
+
+| Event | When bot acts |
+|-------|--------------|
+| PR opened/updated | Posts an LLM-generated code review |
+| Comment on issue/PR | Responds when @mentioned |
 
 ## Local Models (Ollama)
 
@@ -103,34 +172,71 @@ LLM_CONTEXT_WINDOW=8192         # Match your model's context window
 
 ### Tips for Small Models
 
-- **Set `LLM_CONTEXT_WINDOW` accurately** — the bot auto-adjusts how much conversation history and file context it sends to the model based on this value
+- **Set `LLM_CONTEXT_WINDOW` accurately** — the bot adjusts how much context it sends based on this value
 - **Lower the temperature** — `0.1` reduces creative hallucination on smaller models
-- **Reduce `LLM_MAX_TOKENS`** — smaller models produce better, more focused output with lower limits
+- **Reduce `LLM_MAX_TOKENS`** — smaller models produce better output with lower limits
 - **Use Ollama's `num_ctx` parameter** — ensure Ollama allocates enough context: `ollama run gemma3:12b --num_ctx 8192`
-- **Monitor VRAM** — if the model runs out of VRAM it falls back to CPU, causing extreme slowdowns
 
 ## Project Structure
 
 ```
 forge_bot/
-├── server.py          # FastAPI app, webhook endpoint, HMAC
-├── config.py          # pydantic-settings config
-├── router.py          # Event type → handler dispatch
-├── models.py          # Pydantic models for webhook payloads
-├── handlers/          # PR review, issue comment, assignment
-├── clients/           # Gitea/Forgejo API + LLM clients
-├── sandbox/           # DinD container orchestration
-├── rag/               # Optional: ingest, chunk, embed, retrieve
-└── utils/             # Dedup, diff parsing, formatting
+  server.py              # FastAPI app, webhook endpoint, HMAC verification
+  config.py              # pydantic-settings, all env vars
+  router.py              # Event type -> handler dispatch, self-loop guard
+  models.py              # Pydantic models for webhook payloads
+
+  api/                   # YAML-driven API client (replaces hardcoded methods)
+    definitions/
+      gitea.yaml         # ~20 Gitea API endpoint definitions
+      forgejo.yaml       # ~20 Forgejo API endpoint definitions
+    schema.py            # EndpointParam, EndpointDef, ApiDefinitionFile
+    loader.py            # YAML loader with caching
+    client.py            # GenericForgeClient: call(name, **params), search(keyword)
+
+  container/             # Per-event persistent containers
+    manager.py           # ContainerManager: create, exec, destroy
+
+  tools/                 # LLM tool implementations
+    search_api.py        # Search API definitions by keyword
+    api_call.py          # Execute any YAML-defined endpoint
+    exec_tool.py         # Run commands in workspace container
+    todo.py              # Manage visible todo list in status comment
+    registry.py          # Tool registry, OpenAI schema generation
+
+  status/                # Real-time observability via Gitea comments
+    manager.py           # Two-comment system (status + response)
+    formatter.py         # Markdown rendering for todos, tool calls
+
+  handlers/              # Webhook event handlers
+    base.py              # BaseHandler with shared dependencies
+    issue_comment.py     # @mention replies with tool-calling loop
+    pull_request.py      # PR review on opened/synchronized
+    verification.py      # Relevance, hallucination, progress checks
+
+  prompts/               # Jinja2 prompt templates
+    issue_respond.j2
+    pr_review.j2
+
+  clients/
+    llm.py               # AsyncOpenAI wrapper with tool calling support
+
+  rag/                   # Optional: vector-based code retrieval
+  utils/                 # Dedup, diff parsing, formatting
 ```
 
 ## Development
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
+# Install
+pip install -r requirements.txt -r requirements-dev.txt
+
+# Test
 pytest
+
+# Lint
+ruff check forge_bot/
+ruff format forge_bot/
 ```
 
 ## License
